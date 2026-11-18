@@ -42,6 +42,10 @@ Current target: only `dev` is selected for temporary academic MVP preparation (A
 
 Documented fact: Documented Service Bus subscription delivery and REST/HTTPS queries from the dashboard through ACA native ingress (rel_dashboard_log_event_service). Exact exposure and caller authorization remain pending. Sources: service relationships listed in [architecture consumption](architecture.md), ADR-015/016/019 where applicable.
 
+The local protected v2 adapter takes an explicit byte limit and an injected
+source authority. The runtime byte limit, channel identity, historical scope
+validation and delivery settlement remain subject to PD-031/033/035.
+
 | Pending runtime value | Status and approval required |
 |---|---|
 | Listening port and bind address | Unknown, PD-035; framework defaults are not approved contract values. |
