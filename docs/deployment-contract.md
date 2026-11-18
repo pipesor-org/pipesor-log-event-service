@@ -2,7 +2,7 @@
 
 **Status: readiness record; not approved for IaC consumption or deployment.** Prepared for PD-035. [Architecture consumption](architecture.md) records the consulted source revision `c84ef3e4629fcb0c38315f32b641a5fb949e450d`, model IDs, applicable ADRs and committed PD-033–036. ADR-019 governs the current MVP alignment.
 
-**Documented fact** means recorded in those sources/policies, not proven implementation or independent approval evidence. **Proposal** requires acceptance; **Unknown** remains pending. No application images, endpoints, credentials or migrations are implemented in this service increment. IaC contains infrastructure preparation; provisioning is not evidenced here.
+**Documented fact** means recorded in those sources/policies, not proven implementation or independent approval evidence. **Proposal** requires acceptance; **Unknown** remains pending. The first local increment adds the evidence registration and membership core and Flyway V1. Application images, endpoints and runtime credentials are outside this increment. IaC contains infrastructure preparation; provisioning is not evidenced here.
 
 ## Identity and runtime
 
@@ -16,7 +16,7 @@
 
 User direction recorded on 2026-11-06 retains the installed Java 25.0.4.1, Python 3.14.8, Docker 29.9.3 and Git 2.55.0. Java services use Maven (installed: 3.10.0); Azure CLI 2.92.0 is available for separately authorized operations. Select the latest stable dependency versions compatible with that baseline, and pin them when application build/dependency files are introduced. Framework and transitive dependency compatibility must be checked together; availability on this workstation is not container/CI verification. Python dependencies belong in isolated project environments.
 
-This session direction supplements the consulted architecture revision; it does not close PD-032's identity/hash choices or PD-035's base-image and delivery requirements. No application build files are introduced by this documentation update.
+This session direction supplements the consulted architecture revision; it does not close PD-032's identity/hash choices or PD-035's base-image and delivery requirements. The local build follows the established Java 25 and Spring Boot 4.1.2 managed dependency baseline. See [verification](../README.md#development-and-verification).
 
 ## Integrated infrastructure baseline
 
@@ -68,7 +68,7 @@ No application environment-variable names, credentials, secret store or runtime 
 
 Documented fact: incoming consumers/callers are listed in [service relationships](architecture.md#service-relationships). Protocols and directional operations above describe data access, not granted permissions. Control-plane access for Azure/GitHub provisioning or administration is not part of the service runtime contract; no grants are authorized. Exact credentials, audiences, scopes, network rules and permission sets remain unknown (PD-027/034/035 and PD-036 if used). Embedding-provider descriptions do not authorize undeclared direct calls.
 
-Workload Blob and its relationship are removed by ADR-019. PostgreSQL stores sanitized operational evidence, metadata and excerpts; GitHub Actions remains the original-log source. The model removes `storage_container`, `blob_object_key` and their paired-nullability CHECK. No migration has run; existing consumers/databases require migration assessment. Generic provenance/references remain, but no replacement locator is selected. PD-016 is historical selection provenance, not a requirement to restore Blob; independent recovery and retention remain PD-017/030/031.
+Workload Blob and its relationship are removed by ADR-019. PostgreSQL stores sanitized operational evidence, metadata and excerpts; GitHub Actions remains the original-log source. The model removes `storage_container`, `blob_object_key` and their paired-nullability CHECK. V1 has been exercised on disposable PostgreSQL. Existing databases require migration assessment before using an environment runner. Generic provenance/references remain, but no replacement locator is selected. PD-016 is historical selection provenance, not a requirement to restore Blob; independent recovery and retention remain PD-017/030/031.
 
 ## Data lifecycle
 

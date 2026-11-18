@@ -2,7 +2,13 @@
 
 Log/Event Service registers and queries sanitized evidence, metadata and excerpts in PostgreSQL, preserving provenance and references to original GitHub workflow logs. Its canonical architecture ID is `log_event_service`; the planned runtime is Java / Spring Boot on Azure Container Apps.
 
-This repository currently contains documentation and optional Codex configuration. Application code, a Maven project, tests, container images and release automation have not been implemented.
+This repository contains the first executable registration and membership
+increment. The internal Java handlers require an authority for each operation
+and accept already protected evidence. PostgreSQL stores one record per
+deterministic evidence ID and preserves it on replay or conflict. Membership
+returns only a result for the authorized evidence ID. The [architecture
+record](docs/architecture.md#first-evidence-registration-increment) describes
+the selected identity, replay semantics and remaining integration decisions.
 
 ## Documentation
 
@@ -14,7 +20,21 @@ This repository currently contains documentation and optional Codex configuratio
 
 ## Development and verification
 
-The [development baseline](docs/deployment-contract.md#development-baseline) records the selected toolchain and dependency policy. There is no application startup, build or test command yet. The first implementation must document its Maven commands here after verifying them.
+Use Java 25 and Docker for the disposable PostgreSQL 17.11 tests. The
+[development baseline](docs/deployment-contract.md#development-baseline)
+records dependency policy. Run the verified build with:
+
+```bash
+./mvnw -B clean verify
+```
+
+The 26 checks cover input shape, the UUIDv5 vector already used by NLP,
+authority before lookup/write, migration ownership, exact replay, conflicts,
+concurrent insertion and membership across incident, execution and source.
+The database tests exercise an existing shared schema with a synthetic
+neighboring table and a dedicated test-only Flyway history. The handlers
+are composed directly in tests. Environment migration sequencing and
+broker/HTTP composition remain subject to PD-031/033/034/035.
 
 For the current documentation foundation, check affected links and consistency with the referenced sources, then run:
 
