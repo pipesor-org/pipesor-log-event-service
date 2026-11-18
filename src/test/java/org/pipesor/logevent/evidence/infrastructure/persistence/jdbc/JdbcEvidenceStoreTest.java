@@ -1,0 +1,283 @@
+package org.pipesor.logevent.evidence.infrastructure.persistence.jdbc;
+
+import org.flywaydb.core.Flyway;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.pipesor.logevent.evidence.application.commands.EvidenceInput;
+import org.pipesor.logevent.evidence.application.commandhandlers.RegisterEvidenceHandler;
+import org.pipesor.logevent.evidence.application.ports.EvidenceAuthority;
+import org.pipesor.logevent.evidence.application.ports.EvidenceStore.Membership;
+import org.pipesor.logevent.evidence.application.ports.EvidenceStore.Registration;
+import org.pipesor.logevent.evidence.application.ports.EvidenceStoreUnavailableException;
+import org.pipesor.logevent.evidence.application.queries.EvidenceMembershipQuery;
+import org.pipesor.logevent.evidence.application.queryhandlers.CheckEvidenceMembershipHandler;
+import org.pipesor.logevent.evidence.application.services.EvidenceAccessException;
+import org.pipesor.logevent.evidence.domain.model.valueobjects.PipelineStage;
+import org.postgresql.ds.PGSimpleDataSource;
+import org.testcontainers.postgresql.PostgreSQLContainer;
+
+import java.sql.SQLException;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+class JdbcEvidenceStoreTest {
+    private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:17.11");
+    private static final Instant CREATED = Instant.parse("2026-11-17T12:00:00.123456Z");
+    private static PGSimpleDataSource dataSource;
+    private static Flyway flyway;
+    private static JdbcEvidenceStore store;
+
+    @BeforeAll
+    static void startDatabase() throws SQLException {
+        POSTGRES.start();
+        dataSource = new PGSimpleDataSource();
+        dataSource.setURL(POSTGRES.getJdbcUrl());
+        dataSource.setUser(POSTGRES.getUsername());
+        dataSource.setPassword(POSTGRES.getPassword());
+        try (var connection = dataSource.getConnection(); var statement = connection.createStatement()) {
+            statement.execute("CREATE SCHEMA evidence");
+            // Synthetic neighboring context verifies that sharing its schema grants no ownership.
+            statement.execute("CREATE TABLE evidence.correlated_contexts (marker text NOT NULL)");
+            statement.execute("INSERT INTO evidence.correlated_contexts VALUES ('untouched')");
+        }
+        flyway = Flyway.configure().dataSource(dataSource).defaultSchema("evidence")
+                .table("flyway_history_local_log_event").baselineOnMigrate(true).baselineVersion("0").load();
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
+        store = new JdbcEvidenceStore(dataSource, Clock.fixed(CREATED, ZoneOffset.UTC));
+    }
+
+    @AfterAll
+    static void stopDatabase() {
+        POSTGRES.stop();
+    }
+
+    @Test
+    void migrationMatchesOwnedModelWithoutTouchingNeighborOrAddingForeignKeys() throws SQLException {
+        flyway.validate();
+        assertThat(flyway.migrate().migrationsExecuted).isZero();
+        assertThat(strings("""
+                SELECT column_name || ':' || udt_name || ':' || is_nullable
+                FROM information_schema.columns
+                WHERE table_schema = 'evidence' AND table_name = 'evidence_items'
+                ORDER BY ordinal_position
+                """)).containsExactly("id:uuid:NO", "incident_id:uuid:NO", "execution_id:uuid:NO",
+                "correlation_id:text:NO", "source:text:NO", "stage:PipelineStage:NO", "job:text:YES",
+                "summary:text:NO", "excerpt:text:YES", "observed_at:timestamptz:NO", "sequence:int8:YES",
+                "content_hash:text:YES", "size_bytes:int8:YES", "created_at:timestamptz:NO");
+        assertThat(strings("SELECT marker FROM evidence.correlated_contexts")).containsExactly("untouched");
+        assertThat(strings("""
+                SELECT table_schema || '.' || table_name FROM information_schema.tables
+                WHERE table_schema NOT IN ('pg_catalog', 'information_schema') ORDER BY table_name
+                """)).containsExactly("evidence.correlated_contexts", "evidence.evidence_items",
+                "evidence.flyway_history_local_log_event");
+        assertThat(strings("""
+                SELECT constraint_name FROM information_schema.table_constraints
+                WHERE table_schema = 'evidence' AND table_name = 'evidence_items'
+                  AND constraint_type = 'FOREIGN KEY'
+                """)).isEmpty();
+        assertThat(strings("""
+                SELECT e.enumlabel FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid
+                JOIN pg_namespace n ON n.oid = t.typnamespace
+                WHERE n.nspname = 'evidence' AND t.typname = 'PipelineStage' ORDER BY e.enumsortorder
+                """)).containsExactly("BUILD", "TESTING", "QUALITY_GATE", "DEPLOYMENT", "CONTAINER", "INFRASTRUCTURE");
+    }
+
+    @Test
+    void roundTripPreservesProvenanceMicrosecondsAndLargeSequence() throws SQLException {
+        var input = input(UUID.randomUUID());
+        assertThat(store.register(input)).isEqualTo(Registration.CREATED);
+        assertThat(row(input)).containsExactly(input.evidenceId(), input.incidentId(), input.executionId(),
+                input.correlationId(), input.source(), input.stage().name(), input.job(), input.summary(),
+                input.excerpt(), input.observedAt(), input.sequence(), input.contentHash(), input.sizeBytes(), CREATED);
+        assertThat(input.observedAt()).isEqualTo(Instant.parse("2026-11-08T09:20:31.123456Z"));
+        assertThat(store.membership(query(input))).isEqualTo(Membership.MATCH);
+    }
+
+    @Test
+    void duplicateRetainsFirstTechnicalTimeAndEveryFieldChangeConflictsWithoutMutation() throws SQLException {
+        var original = input(UUID.randomUUID());
+        assertThat(store.register(original)).isEqualTo(Registration.CREATED);
+        var saved = row(original);
+        var later = new JdbcEvidenceStore(dataSource, Clock.fixed(CREATED.plusSeconds(60), ZoneOffset.UTC));
+        assertThat(later.register(original)).isEqualTo(Registration.UNCHANGED);
+        var variants = List.of(
+                change(original, UUID.randomUUID(), original.executionId(), original.correlationId(), original.source(), original.stage(), original.job(), original.summary(), original.excerpt(), original.observedAt(), original.sequence(), original.contentHash(), original.sizeBytes()),
+                change(original, original.incidentId(), UUID.randomUUID(), original.correlationId(), original.source(), original.stage(), original.job(), original.summary(), original.excerpt(), original.observedAt(), original.sequence(), original.contentHash(), original.sizeBytes()),
+                change(original, original.incidentId(), original.executionId(), "correlation-other", original.source(), original.stage(), original.job(), original.summary(), original.excerpt(), original.observedAt(), original.sequence(), original.contentHash(), original.sizeBytes()),
+                change(original, original.incidentId(), original.executionId(), original.correlationId(), "github_actions", original.stage(), original.job(), original.summary(), original.excerpt(), original.observedAt(), original.sequence(), original.contentHash(), original.sizeBytes()),
+                change(original, original.incidentId(), original.executionId(), original.correlationId(), original.source(), PipelineStage.BUILD, original.job(), original.summary(), original.excerpt(), original.observedAt(), original.sequence(), original.contentHash(), original.sizeBytes()),
+                change(original, original.incidentId(), original.executionId(), original.correlationId(), original.source(), original.stage(), null, original.summary(), original.excerpt(), original.observedAt(), original.sequence(), original.contentHash(), original.sizeBytes()),
+                change(original, original.incidentId(), original.executionId(), original.correlationId(), original.source(), original.stage(), original.job(), "Other synthetic summary", original.excerpt(), original.observedAt(), original.sequence(), original.contentHash(), original.sizeBytes()),
+                change(original, original.incidentId(), original.executionId(), original.correlationId(), original.source(), original.stage(), original.job(), original.summary(), null, original.observedAt(), original.sequence(), original.contentHash(), original.sizeBytes()),
+                change(original, original.incidentId(), original.executionId(), original.correlationId(), original.source(), original.stage(), original.job(), original.summary(), original.excerpt(), original.observedAt().plusNanos(1000), original.sequence(), original.contentHash(), original.sizeBytes()),
+                change(original, original.incidentId(), original.executionId(), original.correlationId(), original.source(), original.stage(), original.job(), original.summary(), original.excerpt(), original.observedAt(), null, original.contentHash(), original.sizeBytes()),
+                change(original, original.incidentId(), original.executionId(), original.correlationId(), original.source(), original.stage(), original.job(), original.summary(), original.excerpt(), original.observedAt(), original.sequence(), null, original.sizeBytes()),
+                change(original, original.incidentId(), original.executionId(), original.correlationId(), original.source(), original.stage(), original.job(), original.summary(), original.excerpt(), original.observedAt(), original.sequence(), original.contentHash(), null));
+        for (var changed : variants) {
+            assertThat(later.register(changed)).isEqualTo(Registration.CONFLICT);
+            assertThat(row(original)).isEqualTo(saved);
+        }
+    }
+
+    @Test
+    void optionalFieldsRoundTripAndNegativeSizeIsAlsoRejectedByDatabase() throws SQLException {
+        var full = input(UUID.randomUUID());
+        var minimal = change(full, full.incidentId(), full.executionId(), full.correlationId(), full.source(), full.stage(),
+                null, full.summary(), null, full.observedAt(), null, null, null);
+        assertThat(store.register(minimal)).isEqualTo(Registration.CREATED);
+        assertThat(store.register(minimal)).isEqualTo(Registration.UNCHANGED);
+        try (var connection = dataSource.getConnection(); var statement = connection.prepareStatement("""
+                INSERT INTO evidence.evidence_items
+                SELECT ?, incident_id, execution_id, correlation_id, source, stage, job, summary,
+                       excerpt, observed_at, sequence, content_hash, -1, created_at
+                FROM evidence.evidence_items WHERE id = ?
+                """)) {
+            statement.setObject(1, UUID.randomUUID());
+            statement.setObject(2, minimal.evidenceId());
+            assertThat(assertThrows(SQLException.class, statement::executeUpdate).getSQLState()).isEqualTo("23514");
+        }
+    }
+
+    @Test
+    void similarSignalsFromUnrelatedExecutionsRemainSeparateAndMembershipChecksAllReferences() {
+        var first = input(UUID.randomUUID());
+        var second = input(UUID.randomUUID());
+        assertThat(store.register(first)).isEqualTo(Registration.CREATED);
+        assertThat(store.register(second)).isEqualTo(Registration.CREATED);
+        assertThat(store.membership(query(first))).isEqualTo(Membership.MATCH);
+        assertThat(store.membership(query(second))).isEqualTo(Membership.MATCH);
+        assertThat(store.membership(new EvidenceMembershipQuery(first.evidenceId(), second.incidentId(), first.executionId(), first.source())))
+                .isEqualTo(Membership.MISMATCH);
+        assertThat(store.membership(new EvidenceMembershipQuery(first.evidenceId(), first.incidentId(), second.executionId(), first.source())))
+                .isEqualTo(Membership.MISMATCH);
+        assertThat(store.membership(new EvidenceMembershipQuery(first.evidenceId(), first.incidentId(), first.executionId(), "github_actions")))
+                .isEqualTo(Membership.MISMATCH);
+        assertThat(store.membership(new EvidenceMembershipQuery(UUID.randomUUID(), first.incidentId(), first.executionId(), first.source())))
+                .isEqualTo(Membership.NOT_READY);
+    }
+
+    @Test
+    void concurrentEqualRegistrationHasOneWinnerAndConcurrentConflictNeverOverwrites() throws Exception {
+        var same = input(UUID.randomUUID());
+        var results = concurrent(List.of(same, same, same, same, same, same, same, same));
+        assertThat(results).containsOnly(Registration.CREATED, Registration.UNCHANGED);
+        assertThat(results.stream().filter(value -> value == Registration.CREATED).count()).isEqualTo(1);
+        var first = input(UUID.randomUUID());
+        var changed = change(first, first.incidentId(), first.executionId(), first.correlationId(), first.source(), first.stage(),
+                first.job(), "Different synthetic summary", first.excerpt(), first.observedAt(), first.sequence(), first.contentHash(), first.sizeBytes());
+        assertThat(concurrent(List.of(first, changed))).containsExactlyInAnyOrder(Registration.CREATED, Registration.CONFLICT);
+        var originalRow = row(first);
+        assertThat(originalRow.get(7)).isIn(first.summary(), changed.summary());
+        assertThat(store.register(first)).isIn(Registration.UNCHANGED, Registration.CONFLICT);
+        assertThat(store.register(changed)).isIn(Registration.UNCHANGED, Registration.CONFLICT);
+        assertThat(row(first)).isEqualTo(originalRow);
+    }
+
+    @Test
+    void databaseErrorsDoNotExposeSqlOrConnectionDetails() {
+        var unavailable = new PGSimpleDataSource();
+        unavailable.setURL(POSTGRES.getJdbcUrl());
+        unavailable.setUser(POSTGRES.getUsername());
+        unavailable.setPassword(POSTGRES.getPassword());
+        unavailable.setDatabaseName("synthetic_missing_database");
+        var failing = new JdbcEvidenceStore(unavailable, Clock.systemUTC());
+        var input = input(UUID.randomUUID());
+        var failure = assertThrows(EvidenceStoreUnavailableException.class, () -> failing.register(input));
+        assertThat(failure.getMessage()).isEqualTo("Evidence store unavailable");
+        assertThat(failure.getCause()).isNull();
+        assertThrows(EvidenceStoreUnavailableException.class, () -> failing.membership(query(input)));
+    }
+
+    @Test
+    void applicationBoundaryUsesRealStoreAfterAuthorizationAndDeniesBeforeAnyConnection() {
+        EvidenceAuthority allowed = (operation, context) -> EvidenceAuthority.Decision.AUTHORIZED;
+        var register = new RegisterEvidenceHandler(store, allowed);
+        var membership = new CheckEvidenceMembershipHandler(store, allowed);
+        var input = input(UUID.randomUUID());
+        var registered = register.handle(input);
+        assertThat(registered.evidenceId()).isEqualTo(input.evidenceId());
+        assertThat(registered.state()).isEqualTo(Registration.CREATED);
+        assertThat(register.handle(input).state()).isEqualTo(Registration.UNCHANGED);
+        assertThat(membership.handle(query(input))).isEqualTo(Membership.MATCH);
+        assertThat(membership.handle(new EvidenceMembershipQuery(UUID.randomUUID(), input.incidentId(), input.executionId(), input.source())))
+                .isEqualTo(Membership.NOT_READY);
+        assertThat(membership.handle(new EvidenceMembershipQuery(input.evidenceId(), UUID.randomUUID(), input.executionId(), input.source())))
+                .isEqualTo(Membership.MISMATCH);
+
+        var unusable = new JdbcEvidenceStore(new PGSimpleDataSource(), Clock.systemUTC());
+        EvidenceAuthority denied = (operation, context) -> EvidenceAuthority.Decision.DENIED;
+        var rejectedRegistration = new RegisterEvidenceHandler(unusable, denied);
+        var rejectedMembership = new CheckEvidenceMembershipHandler(unusable, denied);
+        assertThat(assertThrows(EvidenceAccessException.class, () -> rejectedRegistration.handle(input)).decision())
+                .isEqualTo(EvidenceAuthority.Decision.DENIED);
+        assertThat(assertThrows(EvidenceAccessException.class, () -> rejectedMembership.handle(query(input))).decision())
+                .isEqualTo(EvidenceAuthority.Decision.DENIED);
+    }
+
+    private static List<Registration> concurrent(List<EvidenceInput> inputs) throws Exception {
+        try (var executor = Executors.newFixedThreadPool(inputs.size())) {
+            var start = new CountDownLatch(1);
+            var futures = inputs.stream().map(input -> executor.submit(() -> {
+                if (!start.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("Test start timed out");
+                return store.register(input);
+            })).toList();
+            start.countDown();
+            var results = new ArrayList<Registration>();
+            for (var future : futures) results.add(future.get(20, TimeUnit.SECONDS));
+            return results;
+        }
+    }
+
+    private static List<String> strings(String sql) throws SQLException {
+        try (var connection = dataSource.getConnection(); var statement = connection.createStatement(); var rows = statement.executeQuery(sql)) {
+            var result = new ArrayList<String>();
+            while (rows.next()) result.add(rows.getString(1));
+            return result;
+        }
+    }
+
+    private static List<Object> row(EvidenceInput input) throws SQLException {
+        try (var connection = dataSource.getConnection(); var statement = connection.prepareStatement("SELECT * FROM evidence.evidence_items WHERE id = ?")) {
+            statement.setObject(1, input.evidenceId());
+            try (var rows = statement.executeQuery()) {
+                assertThat(rows.next()).isTrue();
+                var result = new ArrayList<Object>();
+                for (var i = 1; i <= 14; i++) {
+                    if (i == 10 || i == 14) result.add(rows.getTimestamp(i).toInstant());
+                    else if (i == 6) result.add(rows.getString(i));
+                    else result.add(rows.getObject(i));
+                }
+                assertThat(rows.next()).isFalse();
+                return result;
+            }
+        }
+    }
+
+    private static EvidenceInput input(UUID messageId) {
+        return new EvidenceInput(messageId, UUID.randomUUID(), UUID.randomUUID(), "corr-synthetic-1", "github",
+                PipelineStage.INFRASTRUCTURE, "job-redacted", "Synthetic failure [redacted]", "Synthetic trace [redacted]",
+                Instant.parse("2026-11-08T09:20:31.123456789Z"), 4294967303L, "synthetic-content-digest", 99L);
+    }
+
+    private static EvidenceMembershipQuery query(EvidenceInput input) {
+        return new EvidenceMembershipQuery(input.evidenceId(), input.incidentId(), input.executionId(), input.source());
+    }
+
+    private static EvidenceInput change(EvidenceInput original, UUID incidentId, UUID executionId, String correlationId,
+                                        String source, PipelineStage stage, String job, String summary, String excerpt,
+                                        Instant observedAt, Long sequence, String contentHash, Long sizeBytes) {
+        return new EvidenceInput(original.messageId(), incidentId, executionId, correlationId, source, stage, job, summary,
+                excerpt, observedAt, sequence, contentHash, sizeBytes);
+    }
+}

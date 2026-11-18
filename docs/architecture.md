@@ -1,5 +1,39 @@
 # Architecture consumption
 
+## First evidence registration increment
+
+Baseline: Log/Event `d1f0277`, source model `505232c`, NLP `1d6e54f`.
+The local owner uses UUIDv5 in the URL namespace for
+`urn:pipesor:v1:evidence:<message_id>`, matching NLP's existing derivation.
+This is an implementation choice for this increment. The event producer,
+transport and authorization agreements remain under PD-031/033/034.
+
+The internal registration boundary takes already protected and minimized
+evidence. The injected authority checks caller access and committed operational
+membership. Each authority must be bound to the authenticated caller and
+the operation, including permission to inspect the exact evidence ID before
+any lookup. PostgreSQL commits a new item once. A matching re-delivery returns
+the same ID. Changed persisted fields under that ID produce a conflict.
+Comparison reflects the stored projection and microsecond precision.
+Validation checks authority before reading the Log/Event store and returns
+membership only. The application returns no excerpt or summary from that
+operation. Recorded time has the PostgreSQL microsecond precision of the
+current model. Live authority must come from the agreed owner integration.
+
+Acceptance: match the producer UUID test vector, prove exact replay and
+conflicting payloads on actual PostgreSQL, exercise a concurrent replay, and
+distinguish missing from crossed references only for an authorized caller.
+Migration V1 creates the Log/Event evidence table and its stage type from the
+model. It uses logical references to Pipeline identities. PostgreSQL stores
+the minimized representation; GitHub remains the source for complete logs.
+
+The current delivery is manually composed and verified with isolated fixtures.
+`./mvnw -B clean verify` passed 26 checks, including eight PostgreSQL integration
+checks.
+The deployed broker consumer, public queries, grants, caps and retention
+operations depend on their own contracts.
+
+
 Consulted on 2026-11-06: `pipesor-org/pipesor-docs` full Git SHA **`c84ef3e4629fcb0c38315f32b641a5fb949e450d`**, using the clean local checkout (no uncommitted source overlay). Canonical model: `ey_aiops_ci_cd_diagnosis`, version `0.5.0-mvp-iac-alignment`, status `draft`. `log_event_service` is a confirmed container with an independent repository under ADR-018; confirmed is a model status only.
 
 Architecture source links below follow `main`. The summary reflects the consulted revision recorded above; review it against subsequent accepted decisions before implementation.
