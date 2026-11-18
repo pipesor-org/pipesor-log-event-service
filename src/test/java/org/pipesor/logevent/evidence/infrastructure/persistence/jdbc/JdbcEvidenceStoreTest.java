@@ -15,6 +15,7 @@ import org.pipesor.logevent.evidence.application.queries.EvidenceMembershipQuery
 import org.pipesor.logevent.evidence.application.queryhandlers.CheckEvidenceMembershipHandler;
 import org.pipesor.logevent.evidence.application.services.EvidenceAccessException;
 import org.pipesor.logevent.evidence.domain.model.valueobjects.PipelineStage;
+import org.pipesor.logevent.evidence.domain.model.valueobjects.EvidenceScope;
 import org.postgresql.ds.PGSimpleDataSource;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
@@ -54,7 +55,7 @@ class JdbcEvidenceStoreTest {
         }
         flyway = Flyway.configure().dataSource(dataSource).defaultSchema("evidence")
                 .table("flyway_history_local_log_event").baselineOnMigrate(true).baselineVersion("0").load();
-        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(2);
         store = new JdbcEvidenceStore(dataSource, Clock.fixed(CREATED, ZoneOffset.UTC));
     }
 
@@ -75,7 +76,8 @@ class JdbcEvidenceStoreTest {
                 """)).containsExactly("id:uuid:NO", "incident_id:uuid:NO", "execution_id:uuid:NO",
                 "correlation_id:text:NO", "source:text:NO", "stage:PipelineStage:NO", "job:text:YES",
                 "summary:text:NO", "excerpt:text:YES", "observed_at:timestamptz:NO", "sequence:int8:YES",
-                "content_hash:text:YES", "size_bytes:int8:YES", "created_at:timestamptz:NO");
+                "content_hash:text:YES", "size_bytes:int8:YES", "created_at:timestamptz:NO",
+                "scope_tenant_id:uuid:YES", "scope_github_installation_id:text:YES", "scope_revision:text:YES");
         assertThat(strings("SELECT marker FROM evidence.correlated_contexts")).containsExactly("untouched");
         assertThat(strings("""
                 SELECT table_schema || '.' || table_name FROM information_schema.tables
@@ -140,6 +142,8 @@ class JdbcEvidenceStoreTest {
         assertThat(store.register(minimal)).isEqualTo(Registration.UNCHANGED);
         try (var connection = dataSource.getConnection(); var statement = connection.prepareStatement("""
                 INSERT INTO evidence.evidence_items
+                    (id, incident_id, execution_id, correlation_id, source, stage, job, summary,
+                     excerpt, observed_at, sequence, content_hash, size_bytes, created_at)
                 SELECT ?, incident_id, execution_id, correlation_id, source, stage, job, summary,
                        excerpt, observed_at, sequence, content_hash, -1, created_at
                 FROM evidence.evidence_items WHERE id = ?
@@ -240,6 +244,8 @@ class JdbcEvidenceStoreTest {
         var intake = new ProtectedEvidenceIntake(store, (binding, refs, validatedTrace) -> {
             assertThat(validatedTrace).isEqualTo(trace);
             assertThat(refs.evidenceId()).isEqualTo(expected);
+            assertThat(refs.scope()).isEqualTo(new EvidenceScope(binding.tenantId(),
+                    binding.githubInstallationId(), binding.scopeRevision()));
             assertThat(refs.executionId()).isEqualTo(UUID.fromString("9306afb1-dafe-5915-bded-b9ba5237985a"));
             assertThat(refs.incidentId()).isEqualTo(UUID.fromString("6b14d1b6-fce1-5fe1-8286-8ae6977b3dd0"));
             assertThat(binding.tenantId()).isEqualTo(UUID.fromString("d91d1df6-ae89-40c2-99b5-20edfb3e9ed0"));
@@ -265,6 +271,126 @@ class JdbcEvidenceStoreTest {
                 .containsExactly("2026-11-08 09:20:31.123456");
         assertThat(strings("SELECT count(*)::text FROM evidence.evidence_items WHERE id = '" + expected + "'::uuid"))
                 .containsExactly("1");
+        assertThat(strings("SELECT scope_revision FROM evidence.evidence_items WHERE id = '" + expected + "'::uuid"))
+                .containsExactly("scope-rev-12");
+    }
+
+    @Test
+    void scopedMembershipHidesAbsentLegacyAndCrossedRowsBeforeComparingSource() {
+        var scope = new EvidenceScope(UUID.randomUUID(), "7710600000000000000000000", "scope-r1");
+        var scoped = scoped(input(UUID.randomUUID()), scope);
+        var legacy = input(UUID.randomUUID());
+        assertThat(store.register(scoped)).isEqualTo(Registration.CREATED);
+        assertThat(store.register(legacy)).isEqualTo(Registration.CREATED);
+        var handler = new CheckEvidenceMembershipHandler(store,
+                (operation, query) -> EvidenceAuthority.Decision.AUTHORIZED);
+        assertThat(handler.handleScoped(query(scoped))).isEqualTo(Membership.MATCH);
+        for (var denied : List.of(
+                new EvidenceMembershipQuery(UUID.randomUUID(), scoped.incidentId(), scoped.executionId(), scoped.source(), scope),
+                new EvidenceMembershipQuery(legacy.evidenceId(), legacy.incidentId(), legacy.executionId(), legacy.source(), scope),
+                new EvidenceMembershipQuery(scoped.evidenceId(), scoped.incidentId(), scoped.executionId(), scoped.source(),
+                        new EvidenceScope(UUID.randomUUID(), scope.installationId(), scope.revision())),
+                new EvidenceMembershipQuery(scoped.evidenceId(), scoped.incidentId(), scoped.executionId(), scoped.source(),
+                        new EvidenceScope(scope.tenantId(), "77107", scope.revision())),
+                new EvidenceMembershipQuery(scoped.evidenceId(), scoped.incidentId(), scoped.executionId(), scoped.source(),
+                        new EvidenceScope(scope.tenantId(), scope.installationId(), "scope-r2")),
+                new EvidenceMembershipQuery(scoped.evidenceId(), UUID.randomUUID(), scoped.executionId(), scoped.source(), scope),
+                new EvidenceMembershipQuery(scoped.evidenceId(), scoped.incidentId(), UUID.randomUUID(), scoped.source(), scope))) {
+            assertThat(handler.handleScoped(denied)).isEqualTo(Membership.NOT_READY);
+        }
+        assertThat(handler.handleScoped(new EvidenceMembershipQuery(scoped.evidenceId(), scoped.incidentId(),
+                scoped.executionId(), "different-source", scope))).isEqualTo(Membership.MISMATCH);
+        assertThrows(NullPointerException.class, () -> handler.handleScoped(query(legacy)));
+        var unavailable = new JdbcEvidenceStore(new PGSimpleDataSource(), Clock.systemUTC());
+        var rejected = new CheckEvidenceMembershipHandler(unavailable,
+                (operation, query) -> EvidenceAuthority.Decision.DENIED);
+        assertThat(assertThrows(EvidenceAccessException.class, () -> rejected.handleScoped(query(scoped))).decision())
+                .isEqualTo(EvidenceAuthority.Decision.DENIED);
+    }
+
+    @Test
+    void scopeIsFrozenOnReplayAndLegacyRowsCannotBeInferredFromTheNewRequest() throws Exception {
+        var scope = new EvidenceScope(UUID.randomUUID(), "77106", "scope-r1");
+        var original = scoped(input(UUID.randomUUID()), scope);
+        assertThat(store.register(original)).isEqualTo(Registration.CREATED);
+        assertThat(store.register(original)).isEqualTo(Registration.UNCHANGED);
+        for (var alternative : List.of(
+                new EvidenceScope(UUID.randomUUID(), scope.installationId(), scope.revision()),
+                new EvidenceScope(scope.tenantId(), "77107", scope.revision()),
+                new EvidenceScope(scope.tenantId(), scope.installationId(), "scope-r2"))) {
+            assertThat(store.register(scoped(original, alternative))).isEqualTo(Registration.CONFLICT);
+        }
+        assertThat(store.register(scoped(original, null))).isEqualTo(Registration.CONFLICT);
+        assertThat(store.membership(query(original))).isEqualTo(Membership.MATCH);
+        var legacy = input(UUID.randomUUID());
+        assertThat(store.register(legacy)).isEqualTo(Registration.CREATED);
+        assertThat(store.register(scoped(legacy, scope))).isEqualTo(Registration.CONFLICT);
+        assertThat(store.membership(query(scoped(legacy, scope)))).isEqualTo(Membership.NOT_READY);
+        var racing = scoped(input(UUID.randomUUID()), scope);
+        var other = scoped(racing, new EvidenceScope(scope.tenantId(), scope.installationId(), "scope-r2"));
+        assertThat(concurrent(List.of(racing, other))).containsExactlyInAnyOrder(Registration.CREATED, Registration.CONFLICT);
+        assertThat(List.of(store.membership(query(racing)), store.membership(query(other))))
+                .containsExactlyInAnyOrder(Membership.MATCH, Membership.NOT_READY);
+    }
+
+    @Test
+    void scopeMigrationPreservesV1RowsAndRejectsPartialBindings() throws Exception {
+        var isolated = new PGSimpleDataSource();
+        try (var connection = dataSource.getConnection(); var statement = connection.createStatement()) {
+            statement.execute("CREATE DATABASE legacy_scope_migration");
+        }
+        isolated.setURL(POSTGRES.getJdbcUrl().replace(POSTGRES.getDatabaseName(), "legacy_scope_migration"));
+        isolated.setUser(POSTGRES.getUsername());
+        isolated.setPassword(POSTGRES.getPassword());
+        Flyway.configure().dataSource(isolated).defaultSchema("evidence").target("1").load().migrate();
+        var legacyStore = new JdbcEvidenceStore(isolated, Clock.fixed(CREATED, ZoneOffset.UTC));
+        var legacy = input(UUID.randomUUID());
+        try (var connection = isolated.getConnection(); var statement = connection.prepareStatement("""
+                INSERT INTO evidence.evidence_items
+                    (id, incident_id, execution_id, correlation_id, source, stage, summary, observed_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?::evidence."PipelineStage", ?, ?, ?)
+                """)) {
+            statement.setObject(1, legacy.evidenceId());
+            statement.setObject(2, legacy.incidentId());
+            statement.setObject(3, legacy.executionId());
+            statement.setString(4, legacy.correlationId());
+            statement.setString(5, legacy.source());
+            statement.setString(6, legacy.stage().name());
+            statement.setString(7, legacy.summary());
+            statement.setObject(8, legacy.observedAt().atOffset(ZoneOffset.UTC));
+            statement.setObject(9, CREATED.atOffset(ZoneOffset.UTC));
+            statement.executeUpdate();
+        }
+        assertThat(Flyway.configure().dataSource(isolated).defaultSchema("evidence").load().migrate().migrationsExecuted)
+                .isEqualTo(1);
+        try (var connection = isolated.getConnection(); var statement = connection.prepareStatement("""
+                SELECT summary, scope_tenant_id, scope_github_installation_id, scope_revision
+                FROM evidence.evidence_items WHERE id = ?
+                """)) {
+            statement.setObject(1, legacy.evidenceId());
+            try (var rows = statement.executeQuery()) {
+                assertThat(rows.next()).isTrue();
+                assertThat(rows.getString("summary")).isEqualTo(legacy.summary());
+                assertThat(rows.getObject("scope_tenant_id")).isNull();
+                assertThat(rows.getString("scope_github_installation_id")).isNull();
+                assertThat(rows.getString("scope_revision")).isNull();
+                assertThat(rows.next()).isFalse();
+            }
+        }
+        var scope = new EvidenceScope(UUID.randomUUID(), "77106", "scope-r1");
+        assertThat(legacyStore.membership(query(scoped(legacy, scope)))).isEqualTo(Membership.NOT_READY);
+        try (var connection = isolated.getConnection(); var statement = connection.prepareStatement(
+                "UPDATE evidence.evidence_items SET scope_tenant_id = ? WHERE id = ?")) {
+            statement.setObject(1, scope.tenantId());
+            statement.setObject(2, legacy.evidenceId());
+            assertThat(assertThrows(SQLException.class, statement::executeUpdate).getSQLState()).isEqualTo("23514");
+        }
+    }
+
+    private static EvidenceInput scoped(EvidenceInput input, EvidenceScope scope) {
+        return new EvidenceInput(input.messageId(), input.incidentId(), input.executionId(), input.correlationId(),
+                input.source(), input.stage(), input.job(), input.summary(), input.excerpt(), input.observedAt(),
+                input.sequence(), input.contentHash(), input.sizeBytes(), scope);
     }
 
     private static List<Registration> concurrent(List<EvidenceInput> inputs) throws Exception {
@@ -313,7 +439,7 @@ class JdbcEvidenceStoreTest {
     }
 
     private static EvidenceMembershipQuery query(EvidenceInput input) {
-        return new EvidenceMembershipQuery(input.evidenceId(), input.incidentId(), input.executionId(), input.source());
+        return new EvidenceMembershipQuery(input.evidenceId(), input.incidentId(), input.executionId(), input.source(), input.scope());
     }
 
     private static EvidenceInput change(EvidenceInput original, UUID incidentId, UUID executionId, String correlationId,

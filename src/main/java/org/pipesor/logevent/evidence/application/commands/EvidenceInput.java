@@ -5,6 +5,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.Objects;
 import java.util.UUID;
 import org.pipesor.logevent.evidence.domain.model.valueobjects.PipelineStage;
+import org.pipesor.logevent.evidence.domain.model.valueobjects.EvidenceScope;
 import org.pipesor.logevent.evidence.domain.services.EvidenceIdentity;
 
 /**
@@ -16,7 +17,15 @@ import org.pipesor.logevent.evidence.domain.services.EvidenceIdentity;
 public record EvidenceInput(
         UUID messageId, UUID incidentId, UUID executionId, String correlationId,
         String source, PipelineStage stage, String job, String summary, String excerpt,
-        Instant observedAt, Long sequence, String contentHash, Long sizeBytes) {
+        Instant observedAt, Long sequence, String contentHash, Long sizeBytes, EvidenceScope scope) {
+
+    /** Compatibility for isolated legacy callers. Registration intake supplies an explicit scope. */
+    public EvidenceInput(UUID messageId, UUID incidentId, UUID executionId, String correlationId,
+            String source, PipelineStage stage, String job, String summary, String excerpt,
+            Instant observedAt, Long sequence, String contentHash, Long sizeBytes) {
+        this(messageId, incidentId, executionId, correlationId, source, stage, job, summary, excerpt,
+                observedAt, sequence, contentHash, sizeBytes, null);
+    }
 
     public EvidenceInput {
         Objects.requireNonNull(messageId, "messageId");
