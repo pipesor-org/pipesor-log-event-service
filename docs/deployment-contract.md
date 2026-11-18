@@ -42,6 +42,13 @@ Current target: only `dev` is selected for temporary academic MVP preparation (A
 
 Documented fact: Documented Service Bus subscription delivery and REST/HTTPS queries from the dashboard through ACA native ingress (rel_dashboard_log_event_service). Exact exposure and caller authorization remain pending. Sources: service relationships listed in [architecture consumption](architecture.md), ADR-015/016/019 where applicable.
 
+The protected evidence intake can use the internal v1 Pipeline HTTPS
+authority. It requires a trusted Pipeline origin, a recipient-specific
+app-only token source, an explicit deadline and a response byte limit.
+The client verifies the response binding and disables redirects. The
+caller must compose it with an authenticated ingress and supply those
+settings before delivery is enabled.
+
 The local protected v2 adapter takes an explicit byte limit and an injected
 source authority. The runtime byte limit, channel identity, historical scope
 validation and delivery settlement remain subject to PD-031/033/035.
