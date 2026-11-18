@@ -98,3 +98,22 @@ Missing source approvals/provenance are tracked in PD-012–024, including indiv
 ## GitHub enforcement limitation
 
 The baseline audit confirmed private visibility, `main` as default branch and squash-only merge settings. The GitHub rulesets API returned HTTP 403 with a plan-upgrade requirement for this service; no enforced branch protection or independent approval gate is certified. PR-title/body squash formatting and automatic branch deletion were historical initialization settings, not independently revalidated by this audit. Mandatory reviewed PRs and no direct pushes to main remain contribution rules; server-side enforcement has not been established. Keep these repositories private; do not change visibility to work around that limitation. No empty CI checks or deployment workflows are added.
+
+## Scoped Correlation membership
+
+The approved membership increment freezes capture tenant, GitHub installation
+and scope revision when protected v2 evidence is registered. The owner keeps
+the original scope on replay. A changed scope under the same evidence ID is a
+conflict. The scope tuple records historical provenance. Current permission
+still comes from an authenticated authority.
+
+The Correlation membership operation uses the scoped handler. Its SQL filter
+requires the evidence ID, all three scope values, execution and incident to
+match before source comparison. A missing, crossed or legacy unbound row has
+the same not-ready result. Source contradiction is distinguishable only after
+that filter matches. The endpoint composition must authorize the dedicated
+Correlation principal and scope before lookup.
+
+V2 adds nullable scope columns with an all-null or complete-valid constraint.
+Existing V1 rows stay unbound and cannot gain scope from a registration replay.
+They require separately approved reconciliation before scoped membership.

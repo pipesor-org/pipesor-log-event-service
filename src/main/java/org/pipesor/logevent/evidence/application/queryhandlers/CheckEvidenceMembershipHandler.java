@@ -16,6 +16,13 @@ public final class CheckEvidenceMembershipHandler {
         this.authority = Objects.requireNonNull(authority, "authority");
     }
 
+    /** Scoped read for the Correlation membership exchange; never downgrades to a legacy lookup. */
+    public EvidenceStore.Membership handleScoped(EvidenceMembershipQuery query) {
+        Objects.requireNonNull(query, "query");
+        Objects.requireNonNull(query.scope(), "Frozen evidence scope is required");
+        return handle(query);
+    }
+
     public EvidenceStore.Membership handle(EvidenceMembershipQuery query) {
         Objects.requireNonNull(query, "query");
         EvidenceAccessException.requireAuthorized(authority, EvidenceAuthority.Operation.CHECK_MEMBERSHIP, query);

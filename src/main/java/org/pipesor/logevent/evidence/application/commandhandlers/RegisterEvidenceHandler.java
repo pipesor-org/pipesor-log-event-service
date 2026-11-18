@@ -22,7 +22,7 @@ public final class RegisterEvidenceHandler {
         Objects.requireNonNull(input, "input");
         EvidenceAccessException.requireAuthorized(authority, EvidenceAuthority.Operation.REGISTER,
                 new EvidenceMembershipQuery(
-                input.evidenceId(), input.incidentId(), input.executionId(), input.source()));
+                input.evidenceId(), input.incidentId(), input.executionId(), input.source(), input.scope()));
         var state = store.register(input);
         if (state == null) throw new EvidenceStoreUnavailableException();
         return new EvidenceRegistration(input.evidenceId(), state);

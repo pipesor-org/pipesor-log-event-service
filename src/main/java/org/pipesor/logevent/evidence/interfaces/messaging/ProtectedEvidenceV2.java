@@ -10,6 +10,7 @@ import java.time.ZoneOffset;
 import java.util.UUID;
 import org.pipesor.logevent.evidence.application.commands.EvidenceInput;
 import org.pipesor.logevent.evidence.domain.model.valueobjects.PipelineStage;
+import org.pipesor.logevent.evidence.domain.model.valueobjects.EvidenceScope;
 import org.pipesor.logevent.evidence.domain.services.EvidenceIdentity;
 import tools.jackson.core.StreamReadFeature;
 import tools.jackson.databind.DeserializationFeature;
@@ -87,7 +88,7 @@ public record ProtectedEvidenceV2(EvidenceInput input, Binding binding) {
             EvidenceInput input = new EvidenceInput(sourceMessageId, incidentId, executionId,
                     sourceCorrelationId, "github_actions", PipelineStage.valueOf(text(evidence, "stage")),
                     nullableText(evidence, "job", false), text(evidence, "summary"), text(evidence, "excerpt"),
-                    occurredAt, sequence(evidence), null, null);
+                    occurredAt, sequence(evidence), null, null, new EvidenceScope(tenantId, installationId, scopeRevision));
             return new ProtectedEvidenceV2(input, new Binding(tenantId, accountId, installationId,
                     repositoryId, workflowId, runId, attempt, scopeRevision, pipelineId,
                     sourceUpdatedAt, occurredAt, commitSha, status, conclusion, service, environment));

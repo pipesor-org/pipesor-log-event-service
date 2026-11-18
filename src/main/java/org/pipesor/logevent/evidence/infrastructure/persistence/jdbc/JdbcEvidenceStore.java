@@ -52,8 +52,9 @@ public final class JdbcEvidenceStore implements EvidenceStore {
         try (var statement = connection.prepareStatement("""
                 INSERT INTO evidence.evidence_items
                   (id, incident_id, execution_id, correlation_id, source, stage, job, summary,
-                   excerpt, observed_at, sequence, content_hash, size_bytes, created_at)
-                VALUES (?, ?, ?, ?, ?, ?::evidence."PipelineStage", ?, ?, ?, ?, ?, ?, ?, ?)
+                   excerpt, observed_at, sequence, content_hash, size_bytes, created_at,
+                   scope_tenant_id, scope_github_installation_id, scope_revision)
+                VALUES (?, ?, ?, ?, ?, ?::evidence."PipelineStage", ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (id) DO NOTHING
                 """)) {
             statement.setObject(1, input.evidenceId());
@@ -70,6 +71,9 @@ public final class JdbcEvidenceStore implements EvidenceStore {
             statement.setString(12, input.contentHash());
             statement.setObject(13, input.sizeBytes());
             statement.setObject(14, clock.instant().truncatedTo(ChronoUnit.MICROS).atOffset(ZoneOffset.UTC));
+            statement.setObject(15, input.scope() == null ? null : input.scope().tenantId());
+            statement.setString(16, input.scope() == null ? null : input.scope().installationId());
+            statement.setString(17, input.scope() == null ? null : input.scope().revision());
             return statement.executeUpdate() == 1;
         }
     }
@@ -78,7 +82,8 @@ public final class JdbcEvidenceStore implements EvidenceStore {
         // A separate READ COMMITTED statement sees the winner after a concurrent insert finishes.
         try (var statement = connection.prepareStatement("""
                 SELECT incident_id, execution_id, correlation_id, source, stage, job, summary,
-                       excerpt, observed_at, sequence, content_hash, size_bytes
+                       excerpt, observed_at, sequence, content_hash, size_bytes,
+                       scope_tenant_id, scope_github_installation_id, scope_revision
                 FROM evidence.evidence_items WHERE id = ?
                 """)) {
             statement.setObject(1, input.evidenceId());
@@ -95,7 +100,10 @@ public final class JdbcEvidenceStore implements EvidenceStore {
                         && input.observedAt().equals(row.getObject("observed_at", OffsetDateTime.class).toInstant())
                         && Objects.equals(input.sequence(), row.getObject("sequence", Long.class))
                         && Objects.equals(input.contentHash(), row.getString("content_hash"))
-                        && Objects.equals(input.sizeBytes(), row.getObject("size_bytes", Long.class));
+                        && Objects.equals(input.sizeBytes(), row.getObject("size_bytes", Long.class))
+                        && Objects.equals(input.scope() == null ? null : input.scope().tenantId(), row.getObject("scope_tenant_id", UUID.class))
+                        && Objects.equals(input.scope() == null ? null : input.scope().installationId(), row.getString("scope_github_installation_id"))
+                        && Objects.equals(input.scope() == null ? null : input.scope().revision(), row.getString("scope_revision"));
                 return equal ? Registration.UNCHANGED : Registration.CONFLICT;
             }
         }
@@ -104,6 +112,7 @@ public final class JdbcEvidenceStore implements EvidenceStore {
     @Override
     public Membership membership(EvidenceMembershipQuery query) {
         Objects.requireNonNull(query);
+        if (query.scope() != null) return scopedMembership(query);
         try (var connection = dataSource.getConnection();
              var statement = connection.prepareStatement("""
                      SELECT incident_id, execution_id, source
@@ -113,6 +122,28 @@ public final class JdbcEvidenceStore implements EvidenceStore {
             try (var row = statement.executeQuery()) {
                 if (!row.next()) return Membership.NOT_READY;
                 return sameMembership(row, query) ? Membership.MATCH : Membership.MISMATCH;
+            }
+        } catch (SQLException exception) {
+            throw new EvidenceStoreUnavailableException();
+        }
+    }
+
+    private Membership scopedMembership(EvidenceMembershipQuery query) {
+        try (var connection = dataSource.getConnection();
+             var statement = connection.prepareStatement("""
+                     SELECT source FROM evidence.evidence_items
+                     WHERE id = ? AND scope_tenant_id = ? AND scope_github_installation_id = ?
+                       AND scope_revision = ? AND execution_id = ? AND incident_id = ?
+                     """)) {
+            statement.setObject(1, query.evidenceId());
+            statement.setObject(2, query.scope().tenantId());
+            statement.setString(3, query.scope().installationId());
+            statement.setString(4, query.scope().revision());
+            statement.setObject(5, query.executionId());
+            statement.setObject(6, query.incidentId());
+            try (var row = statement.executeQuery()) {
+                if (!row.next()) return Membership.NOT_READY;
+                return query.source().equals(row.getString("source")) ? Membership.MATCH : Membership.MISMATCH;
             }
         } catch (SQLException exception) {
             throw new EvidenceStoreUnavailableException();

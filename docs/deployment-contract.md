@@ -113,3 +113,37 @@ Before IaC consumes this contract, provide:
 4. The applicable independent environment promotion approvals and separate authorization for any infrastructure action. Contract approval alone does not authorize deployment.
 
 **Approval evidence today: none for this service's delivery contract.** ADRs retain their recorded Accepted status; missing individual acceptance records remain PD-014. This document is sufficient to expose gaps while repository initialization proceeds; it is insufficient to claim deployability.
+
+## Evidence scope migration and membership
+
+V2 adds `scope_tenant_id`, `scope_github_installation_id` and
+`scope_revision` to the owned evidence table. Each row has either all three
+valid values or all three null. The protected v2 registration supplies the
+validated scope and compares it on replay. Legacy internal callers keep their
+existing constructor and produce unbound rows. A replay never fills in scope
+on an old row.
+
+Correlation's membership lookup filters evidence ID, scope, execution and
+incident in one read. It cannot distinguish an absent row from one outside
+the requested scope or attempt. Its authority is invoked before that read.
+Existing legacy membership remains internal and requires authority for the
+exact ID. A runtime composition must choose the scoped operation for Correlation.
+
+The change needs model-owned migration review and owner-scoped execution.
+No environment database has been migrated by these local checks.
+
+## Correlation evidence membership v1
+
+The internal `/internal/v1/evidence/membership-checks` handler is composed
+explicitly. Its caller is Correlation, with separate Entra workload issuer,
+signing-key URI, recipient audience, principal, client and role plus the
+permitted capture tenant and GitHub installation. Configure the request
+deadline, clock skew, body, header and concurrency limits at composition.
+Production callers connect through a trusted internal HTTPS listener.
+Correlation first verifies the same capture revision and attempt through
+Pipeline/Ingestion. The lookup matches the committed scope and the exact
+execution and incident, without loading evidence text. Absent, crossed and
+unbound rows return the same result. Legacy binding recovery is a separate
+approved operation.
+
+See the [owner-validation contract](https://github.com/pipesor-org/pipesor-evidence-correlation-engine/blob/main/docs/contracts/owner-validation-v1.openapi.yaml).
