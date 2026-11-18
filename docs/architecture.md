@@ -27,12 +27,16 @@ Migration V1 creates the Log/Event evidence table and its stage type from the
 model. It uses logical references to Pipeline identities. PostgreSQL stores
 the minimized representation; GitHub remains the source for complete logs.
 
-The current delivery is manually composed and verified with isolated fixtures.
-`./mvnw -B clean verify` passed 26 checks, including eight PostgreSQL integration
-checks.
-The deployed broker consumer, public queries, grants, caps and retention
-operations depend on their own contracts.
-
+The isolated intake reads Ingestion's `protected_workflow_evidence` v2 and
+checks the delivery metadata against the body. It derives the logical
+references and gives an explicitly provided authority the capture scope,
+GitHub identities, commit, both source timestamps and the validated
+correlation ID before registration and on every replay.
+This local projection uses `occurred_at` for `observed_at` at PostgreSQL
+microsecond precision. The authority receives both timestamps at the original
+precision. JDBC replay compares the persisted projection. The owner
+authority, broker settlement, public queries, grants, runtime limits and
+retention operations depend on their own contracts.
 
 Consulted on 2026-11-06: `pipesor-org/pipesor-docs` full Git SHA **`c84ef3e4629fcb0c38315f32b641a5fb949e450d`**, using the clean local checkout (no uncommitted source overlay). Canonical model: `ey_aiops_ci_cd_diagnosis`, version `0.5.0-mvp-iac-alignment`, status `draft`. `log_event_service` is a confirmed container with an independent repository under ADR-018; confirmed is a model status only.
 

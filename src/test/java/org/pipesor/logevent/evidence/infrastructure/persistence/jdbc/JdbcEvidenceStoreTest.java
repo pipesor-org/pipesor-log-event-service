@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.pipesor.logevent.evidence.application.commands.EvidenceInput;
 import org.pipesor.logevent.evidence.application.commandhandlers.RegisterEvidenceHandler;
 import org.pipesor.logevent.evidence.application.ports.EvidenceAuthority;
+import org.pipesor.logevent.evidence.interfaces.messaging.ProtectedEvidenceIntake;
 import org.pipesor.logevent.evidence.application.ports.EvidenceStore.Membership;
 import org.pipesor.logevent.evidence.application.ports.EvidenceStore.Registration;
 import org.pipesor.logevent.evidence.application.ports.EvidenceStoreUnavailableException;
@@ -223,6 +224,47 @@ class JdbcEvidenceStoreTest {
                 .isEqualTo(EvidenceAuthority.Decision.DENIED);
         assertThat(assertThrows(EvidenceAccessException.class, () -> rejectedMembership.handle(query(input))).decision())
                 .isEqualTo(EvidenceAuthority.Decision.DENIED);
+    }
+
+    @Test
+    void ingestsTheActualProducerFixtureOnlyAfterAuthorityConfirmsItsBinding() throws Exception {
+        byte[] body;
+        try (var fixture = JdbcEvidenceStoreTest.class.getResourceAsStream("/protected-workflow-evidence-v2.json")) {
+            body = java.util.Objects.requireNonNull(fixture).readAllBytes();
+        }
+        String messageId = "cf6b69cf-a28d-49f3-bceb-000000000001";
+        String trace = "ci-investigation-204";
+        String type = "protected_workflow_evidence";
+        var expected = UUID.fromString("e6988490-6322-590d-b48d-662b154b55d9");
+        var decision = new java.util.concurrent.atomic.AtomicReference<>(EvidenceAuthority.Decision.NOT_READY);
+        var intake = new ProtectedEvidenceIntake(store, (binding, refs, validatedTrace) -> {
+            assertThat(validatedTrace).isEqualTo(trace);
+            assertThat(refs.evidenceId()).isEqualTo(expected);
+            assertThat(refs.executionId()).isEqualTo(UUID.fromString("9306afb1-dafe-5915-bded-b9ba5237985a"));
+            assertThat(refs.incidentId()).isEqualTo(UUID.fromString("6b14d1b6-fce1-5fe1-8286-8ae6977b3dd0"));
+            assertThat(binding.tenantId()).isEqualTo(UUID.fromString("d91d1df6-ae89-40c2-99b5-20edfb3e9ed0"));
+            assertThat(binding.githubAccountId()).isEqualTo("6802100000000000000000000");
+            assertThat(binding.githubInstallationId()).isEqualTo("7710600000000000000000000");
+            assertThat(binding.scopeRevision()).isEqualTo("scope-rev-12");
+            assertThat(binding.occurredAt()).isEqualTo(Instant.parse("2026-11-08T09:20:31.123456789Z"));
+            assertThat(binding.sourceUpdatedAt()).isEqualTo(Instant.parse("2026-11-08T09:20:40.987654321Z"));
+            return decision.get();
+        }, body.length);
+        var pending = assertThrows(EvidenceAccessException.class,
+                () -> intake.receive(body, messageId, trace, type, 2));
+        assertThat(pending.decision()).isEqualTo(EvidenceAuthority.Decision.NOT_READY);
+        assertThat(strings("SELECT id::text FROM evidence.evidence_items")).doesNotContain(expected.toString());
+        decision.set(EvidenceAuthority.Decision.AUTHORIZED);
+        assertThat(intake.receive(body, messageId, trace, type, 2).state()).isEqualTo(Registration.CREATED);
+        assertThat(intake.receive(body, messageId, trace, type, 2).state()).isEqualTo(Registration.UNCHANGED);
+        decision.set(EvidenceAuthority.Decision.DENIED);
+        var revoked = assertThrows(EvidenceAccessException.class,
+                () -> intake.receive(body, messageId, trace, type, 2));
+        assertThat(revoked.decision()).isEqualTo(EvidenceAuthority.Decision.DENIED);
+        assertThat(strings("SELECT observed_at AT TIME ZONE 'UTC' FROM evidence.evidence_items WHERE id = '" + expected + "'::uuid"))
+                .containsExactly("2026-11-08 09:20:31.123456");
+        assertThat(strings("SELECT count(*)::text FROM evidence.evidence_items WHERE id = '" + expected + "'::uuid"))
+                .containsExactly("1");
     }
 
     private static List<Registration> concurrent(List<EvidenceInput> inputs) throws Exception {
