@@ -49,7 +49,8 @@ public record ProtectedEvidenceV2(EvidenceInput input, Binding binding) {
                     .onUnmappableCharacter(CodingErrorAction.REPORT)
                     .decode(ByteBuffer.wrap(body)).toString();
             JsonNode root = object(JSON.readTree(decoded));
-            require("2.0".equals(text(root, "schema_version")));
+            String version = text(root, "schema_version");
+            require("2.0".equals(version) || "2.1".equals(version));
             require(EVENT_TYPE.equals(text(root, "event_type")));
             UUID sourceMessageId = uuid(root, "message_id");
             String sourceCorrelationId = safeId(root, "correlation_id");
@@ -85,10 +86,18 @@ public record ProtectedEvidenceV2(EvidenceInput input, Binding binding) {
             // Derivation is a logical reference, not proof that the incident exists.
             UUID incidentId = EvidenceIdentity.named("urn:pipesor:v1:incident:" + executionId);
             JsonNode evidence = object(root.get("evidence"));
+            String job = nullableText(evidence, "job", false);
+            String locator = null;
+            if ("2.1".equals(version)) {
+                locator = text(evidence, "source_locator");
+                require(job != null && job.matches("[1-9][0-9]*") && locator.matches(
+                        "v2:job:" + job + ":member:[0-9]{1,9}_verify\\.txt:lines:([1-9][0-9]{0,8})-\\1:sha256:[0-9a-f]{64}"));
+            } else { require(!evidence.has("source_locator")); }
             EvidenceInput input = new EvidenceInput(sourceMessageId, incidentId, executionId,
                     sourceCorrelationId, "github_actions", PipelineStage.valueOf(text(evidence, "stage")),
-                    nullableText(evidence, "job", false), text(evidence, "summary"), text(evidence, "excerpt"),
-                    occurredAt, sequence(evidence), null, null, new EvidenceScope(tenantId, installationId, scopeRevision));
+                    job, text(evidence, "summary"), text(evidence, "excerpt"),
+                    occurredAt, sequence(evidence), null, null, new EvidenceScope(tenantId, installationId, scopeRevision),
+                    locator == null ? null : repositoryId + ":" + workflowId + ":" + runId + ":" + attempt + ":" + locator);
             return new ProtectedEvidenceV2(input, new Binding(tenantId, accountId, installationId,
                     repositoryId, workflowId, runId, attempt, scopeRevision, pipelineId,
                     sourceUpdatedAt, occurredAt, commitSha, status, conclusion, service, environment));

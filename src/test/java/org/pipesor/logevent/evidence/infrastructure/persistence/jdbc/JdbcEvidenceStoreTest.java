@@ -55,7 +55,7 @@ class JdbcEvidenceStoreTest {
         }
         flyway = Flyway.configure().dataSource(dataSource).defaultSchema("evidence")
                 .table("flyway_history_local_log_event").baselineOnMigrate(true).baselineVersion("0").load();
-        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(2);
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(3);
         store = new JdbcEvidenceStore(dataSource, Clock.fixed(CREATED, ZoneOffset.UTC));
     }
 
@@ -77,7 +77,7 @@ class JdbcEvidenceStoreTest {
                 "correlation_id:text:NO", "source:text:NO", "stage:PipelineStage:NO", "job:text:YES",
                 "summary:text:NO", "excerpt:text:YES", "observed_at:timestamptz:NO", "sequence:int8:YES",
                 "content_hash:text:YES", "size_bytes:int8:YES", "created_at:timestamptz:NO",
-                "scope_tenant_id:uuid:YES", "scope_github_installation_id:text:YES", "scope_revision:text:YES");
+                "scope_tenant_id:uuid:YES", "scope_github_installation_id:text:YES", "scope_revision:text:YES", "source_locator:text:YES");
         assertThat(strings("SELECT marker FROM evidence.correlated_contexts")).containsExactly("untouched");
         assertThat(strings("""
                 SELECT table_schema || '.' || table_name FROM information_schema.tables
@@ -362,7 +362,7 @@ class JdbcEvidenceStoreTest {
             statement.executeUpdate();
         }
         assertThat(Flyway.configure().dataSource(isolated).defaultSchema("evidence").load().migrate().migrationsExecuted)
-                .isEqualTo(1);
+                .isEqualTo(2);
         try (var connection = isolated.getConnection(); var statement = connection.prepareStatement("""
                 SELECT summary, scope_tenant_id, scope_github_installation_id, scope_revision
                 FROM evidence.evidence_items WHERE id = ?

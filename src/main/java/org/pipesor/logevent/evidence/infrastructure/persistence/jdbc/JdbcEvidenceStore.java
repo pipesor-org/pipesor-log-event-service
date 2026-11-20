@@ -53,8 +53,8 @@ public final class JdbcEvidenceStore implements EvidenceStore {
                 INSERT INTO evidence.evidence_items
                   (id, incident_id, execution_id, correlation_id, source, stage, job, summary,
                    excerpt, observed_at, sequence, content_hash, size_bytes, created_at,
-                   scope_tenant_id, scope_github_installation_id, scope_revision)
-                VALUES (?, ?, ?, ?, ?, ?::evidence."PipelineStage", ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   scope_tenant_id, scope_github_installation_id, scope_revision, source_locator)
+                VALUES (?, ?, ?, ?, ?, ?::evidence."PipelineStage", ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (id) DO NOTHING
                 """)) {
             statement.setObject(1, input.evidenceId());
@@ -74,6 +74,7 @@ public final class JdbcEvidenceStore implements EvidenceStore {
             statement.setObject(15, input.scope() == null ? null : input.scope().tenantId());
             statement.setString(16, input.scope() == null ? null : input.scope().installationId());
             statement.setString(17, input.scope() == null ? null : input.scope().revision());
+            statement.setString(18, input.sourceLocator());
             return statement.executeUpdate() == 1;
         }
     }
@@ -83,7 +84,7 @@ public final class JdbcEvidenceStore implements EvidenceStore {
         try (var statement = connection.prepareStatement("""
                 SELECT incident_id, execution_id, correlation_id, source, stage, job, summary,
                        excerpt, observed_at, sequence, content_hash, size_bytes,
-                       scope_tenant_id, scope_github_installation_id, scope_revision
+                       scope_tenant_id, scope_github_installation_id, scope_revision, source_locator
                 FROM evidence.evidence_items WHERE id = ?
                 """)) {
             statement.setObject(1, input.evidenceId());
@@ -99,6 +100,7 @@ public final class JdbcEvidenceStore implements EvidenceStore {
                         && Objects.equals(input.excerpt(), row.getString("excerpt"))
                         && input.observedAt().equals(row.getObject("observed_at", OffsetDateTime.class).toInstant())
                         && Objects.equals(input.sequence(), row.getObject("sequence", Long.class))
+                        && Objects.equals(input.sourceLocator(), row.getString("source_locator"))
                         && Objects.equals(input.contentHash(), row.getString("content_hash"))
                         && Objects.equals(input.sizeBytes(), row.getObject("size_bytes", Long.class))
                         && Objects.equals(input.scope() == null ? null : input.scope().tenantId(), row.getObject("scope_tenant_id", UUID.class))

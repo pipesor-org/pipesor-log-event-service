@@ -36,6 +36,22 @@ class ProtectedEvidenceV2Test {
     }
 
     @Test
+    void aggregateLocatorIncludesOriginalExecutionAndRequiresMatchingJob() throws Exception {
+        var mapper = JsonMapper.builder().build();
+        var document = (tools.jackson.databind.node.ObjectNode) mapper.readTree(fixture());
+        var evidence = (tools.jackson.databind.node.ObjectNode) document.get("evidence");
+        String locator = "v2:job:701:member:0_verify.txt:lines:2-2:sha256:" + "a".repeat(64);
+        document.put("schema_version", "2.1");
+        evidence.put("job", "701");
+        evidence.put("source_locator", locator);
+        var value = decode(mapper.writeValueAsBytes(document));
+        assertThat(value.input().sourceLocator()).isEqualTo(value.binding().githubRepositoryId() + ":" +
+                value.binding().githubWorkflowId() + ":" + value.binding().githubRunId() + ":1:" + locator);
+        evidence.put("job", "702");
+        assertThrows(IllegalArgumentException.class, () -> decode(mapper.writeValueAsBytes(document)));
+    }
+
+    @Test
     void acceptsNullableOrAbsentJobAndSequence() throws Exception {
         var mapper = JsonMapper.builder().build();
         var document = (tools.jackson.databind.node.ObjectNode) mapper.readTree(fixture());
