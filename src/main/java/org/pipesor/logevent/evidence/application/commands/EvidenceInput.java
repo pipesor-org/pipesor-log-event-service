@@ -17,7 +17,15 @@ import org.pipesor.logevent.evidence.domain.services.EvidenceIdentity;
 public record EvidenceInput(
         UUID messageId, UUID incidentId, UUID executionId, String correlationId,
         String source, PipelineStage stage, String job, String summary, String excerpt,
-        Instant observedAt, Long sequence, String contentHash, Long sizeBytes, EvidenceScope scope) {
+        Instant observedAt, Long sequence, String contentHash, Long sizeBytes, EvidenceScope scope,
+        String sourceLocator) {
+
+    public EvidenceInput(UUID messageId, UUID incidentId, UUID executionId, String correlationId,
+            String source, PipelineStage stage, String job, String summary, String excerpt,
+            Instant observedAt, Long sequence, String contentHash, Long sizeBytes, EvidenceScope scope) {
+        this(messageId, incidentId, executionId, correlationId, source, stage, job, summary, excerpt,
+                observedAt, sequence, contentHash, sizeBytes, scope, null);
+    }
 
     /** Compatibility for isolated legacy callers. Registration intake supplies an explicit scope. */
     public EvidenceInput(UUID messageId, UUID incidentId, UUID executionId, String correlationId,

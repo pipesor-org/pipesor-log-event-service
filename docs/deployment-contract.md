@@ -147,3 +147,11 @@ unbound rows return the same result. Legacy binding recovery is a separate
 approved operation.
 
 See the [owner-validation contract](https://github.com/pipesor-org/pipesor-evidence-correlation-engine/blob/main/docs/contracts/owner-validation-v1.openapi.yaml).
+
+### Protected evidence 2.1
+
+Apply V3 before consuming aggregate observations. The decoder requires a
+job-bound single-line source locator and stores it with the repository,
+workflow, run and attempt in the owned evidence row. A changed locator under
+the same evidence ID conflicts. Historical 2.0 rows retain a null locator.
+Existing intake authorization and authenticated membership queries still apply.
