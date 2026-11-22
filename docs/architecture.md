@@ -117,3 +117,22 @@ Correlation principal and scope before lookup.
 V2 adds nullable scope columns with an all-null or complete-valid constraint.
 Existing V1 rows stay unbound and cannot gain scope from a registration replay.
 They require separately approved reconciliation before scoped membership.
+
+## MVP runtime composition
+
+The service runs as one Spring Boot image with profiles `local` and `azure`
+(pipesor-docs ADR-022, platform identity contract v1, runtime manifest).
+Service Bus subscription `log-event` feeds `ProtectedEvidenceIntake`; the
+source authority is Pipeline's operational-reference check, called with a
+workload token (`pipeline`, `Evidence.Check`). Its port
+(`application/ports/OperationalReferenceAuthority`, with `ExecutionBinding`)
+lives in the application layer; the HTTP adapter lives in infrastructure.
+`NOT_READY` and unavailable decisions are abandoned for redelivery because
+Pipeline may not have applied the execution snapshot yet; permanent contract
+failures are dead-lettered. The membership route is a Spring MVC controller
+behind the platform decoder and accepts only `correlation` with
+`Correlation.EvidenceMembership.Check`. The tenant is the environment tenant;
+the installation is not pinned because the scoped lookup already filters by
+the requested installation and revision. Protected evidence 2.2 locators are
+validated by shape only (protected-evidence-v2.2.md); 2.1 keeps its exact rules.
+Log/Event has no human API in the MVP (mvp-http-api-v1.md).

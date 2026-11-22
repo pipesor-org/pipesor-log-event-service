@@ -2,13 +2,85 @@
 
 Log/Event Service registers and queries sanitized evidence, metadata and excerpts in PostgreSQL, preserving provenance and references to original GitHub workflow logs. Its canonical architecture ID is `log_event_service`; the planned runtime is Java / Spring Boot on Azure Container Apps.
 
-This repository contains the first executable registration and membership
-increment. The internal Java handlers require an authority for each operation
-and accept already protected evidence. PostgreSQL stores one record per
-deterministic evidence ID and preserves it on replay or conflict. Membership
-returns only a result for the authorized evidence ID. The [architecture
+This repository is a deployable Spring Boot service (Java 25, Spring Boot 4.1.2).
+It consumes `protected_workflow_evidence` from Service Bus, confirms each
+event with Pipeline, stores the sanitized evidence in PostgreSQL schema
+`evidence`, and answers Correlation's scoped membership checks. Identity,
+profiles and runtime inputs follow the platform identity contract v1 and the
+runtime manifest in `pipesor-docs`. The [architecture
 record](docs/architecture.md#first-evidence-registration-increment) describes
 the selected identity, replay semantics and remaining integration decisions.
+
+Log/Event exposes no human API in the MVP: the [MVP HTTP
+API](https://github.com/pipesor-org/pipesor-docs/blob/main/docs/architecture/contracts/mvp-http-api-v1.md)
+lists no Log/Event route for the dashboard, so no session scope is accepted
+by any route.
+
+## Routes
+
+| Method and path | Caller | Notes |
+|---|---|---|
+| `POST /internal/v1/evidence/membership-checks` | workload `correlation`, role `Correlation.EvidenceMembership.Check` | Correlation evidence membership v1; `Cache-Control: no-store`; fixed `application/problem+json` errors |
+| `GET /.well-known/jwks.json` | unauthenticated | public signing keys, `Cache-Control: public, max-age=300` |
+| `GET /actuator/health/liveness`, `GET /actuator/health/readiness` | unauthenticated | readiness includes PostgreSQL and the Service Bus processor |
+
+Every other route is denied. Missing or invalid tokens get `401`, a valid
+token for another caller or role gets `403`, and a repeated or malformed
+`Authorization` header gets `400`.
+
+Outbound: `POST {PIPESOR_ENDPOINTS_PIPELINE}/internal/v1/evidence/operational-reference-checks`
+with a workload token for target `pipeline`, role `Evidence.Check`.
+
+## Messaging
+
+Subscription `log-event` on topic `workflow-evidence` (filter
+`eventType = 'protected_workflow_evidence'`, `schemaMajor` 2). Accepted body
+versions: 2.0, 2.1 (single-line Verify locator) and 2.2 (generalized member,
+up to 200 lines). Settlement:
+
+| Result | Settlement |
+|---|---|
+| registered or identical replay | complete |
+| Pipeline `NOT_READY` or unavailable, store unavailable | abandon (redelivery; the subscription's max delivery count bounds retries) |
+| invalid envelope, unsupported event, conflict, `DENIED`, `MISMATCH` | dead-letter with a fixed reason (`INVALID_PROTECTED_EVIDENCE`, `UNSUPPORTED_EVENT`, `EVIDENCE_CONFLICT`, `EVIDENCE_DENIED`, `REFERENCE_MISMATCH`) |
+
+Logs carry the outcome, message ID and correlation ID, never payloads,
+excerpts, tokens or exception messages.
+
+## Configuration
+
+One image; the profile selects adapters. Values come from the environment.
+
+| Variable | Profile | Meaning |
+|---|---|---|
+| `SPRING_PROFILES_ACTIVE` | both | `local` or `azure` |
+| `PIPESOR_TENANT_ID` | both | environment tenant; membership requests for another tenant are `DENIED` |
+| `PIPESOR_WORKLOAD_ID` | both | `log-event` |
+| `PIPESOR_SECURITY_AUDIENCE` | both | `urn:pipesor:api:log-event` |
+| `PIPESOR_SECURITY_TRUSTEDWORKLOADS_0_ID` / `_JWKSURI` / `_ROLES` | both | `correlation`, its JWKS URI, `Correlation.EvidenceMembership.Check` |
+| `PIPESOR_ENDPOINTS_PIPELINE` | both | Pipeline base URL |
+| `PIPESOR_DATABASE_URL`, `PIPESOR_DATABASE_USERNAME` | both | PostgreSQL database `pipesor` |
+| `PIPESOR_DATABASE_PASSWORD` | local | password authentication |
+| `PIPESOR_SIGNING_KEY_FILE` | local | PKCS#8 PEM, mode 0600 |
+| `PIPESOR_SERVICE_BUS_CONNECTION_STRING` | local | emulator connection string |
+| `PIPESOR_SIGNING_KEY_ID` | azure | Key Vault key `pipesor-log-event-signing` |
+| `PIPESOR_SERVICE_BUS_NAMESPACE` | azure | fully qualified namespace; `DefaultAzureCredential` (managed identity) |
+| `PIPESOR_SERVICE_BUS_TOPIC` / `_SUBSCRIPTION` | both | default `workflow-evidence` / `log-event` |
+| `SERVER_PORT` | both | `8080` in the image; `8083` on the local stack |
+
+Under `azure`, PostgreSQL uses Entra tokens through
+`azure-identity-extensions` (`AzurePostgresqlAuthenticationPlugin`, `sslmode=require`);
+no password is configured. A connection string or PEM key fails startup
+outside `local`, and plain HTTP is allowed only to loopback hosts under `local`.
+`PIPESOR_SECURITY_SESSION_JWKSURI` is accepted but unused, since no route takes
+session tokens. Limits (event bytes, Pipeline timeout and response size,
+membership deadline, body/header size and concurrency) are under
+`pipesor.log-event.*` in `src/main/resources/application.yml`.
+
+Flyway runs at startup on schema `evidence` with history table
+`flyway_history_log_event`, `baseline-on-migrate=true` and
+`baseline-version=0`, so V1 still runs when Correlation created the shared
+schema first.
 
 ## Documentation
 
@@ -20,25 +92,38 @@ the selected identity, replay semantics and remaining integration decisions.
 
 ## Development and verification
 
-Use Java 25 and Docker for the disposable PostgreSQL 17.11 tests. The
-[development baseline](docs/deployment-contract.md#development-baseline)
+Use Java 25 and Docker (Testcontainers starts disposable PostgreSQL 17.11).
+The [development baseline](docs/deployment-contract.md#development-baseline)
 records dependency policy. Run the verified build with:
 
 ```bash
-./mvnw -B clean verify
+./mvnw -B -ntp verify
 ```
 
 The checks cover input shape, the UUIDv5 vector already used by NLP,
 authority before lookup/write, migration ownership, replay, conflicts,
-concurrent insertion and membership across incident, execution and source.
-They also verify protected v2 decoding with a fixture generated by
-Ingestion's `NormalizedMessagesTransformer` at `1066785` and register it in
-disposable PostgreSQL after a test authority confirms the source binding.
-The database tests use a synthetic neighboring table and dedicated test-only
-Flyway history. They also cover V1-to-V2 preservation of legacy rows, scoped membership,
-partial scope rejection and conflicting scope replays. Environment migration
-sequencing and broker/HTTP composition
-remain subject to PD-031/033/034/035.
+concurrent insertion, scoped membership, protected 2.0/2.1/2.2 decoding,
+Pipeline response binding, Service Bus settlement, platform token
+verification and the full application under the `local` profile (Flyway
+history, probes, JWKS, caller and role restrictions, fixed problems).
+
+### Run locally against the shared stack
+
+Start the stack from `pipesor-workspace` (`tools/local_stack.py init` and
+`up`), then run the service with its generated environment file. The file is
+not shell-safe for the Service Bus connection string (it contains `;`), so
+export its lines verbatim instead of sourcing it, for example:
+
+```bash
+while IFS= read -r line; do [ -n "$line" ] && export "$line"; done < ~/.config/pipesor-local/env/log-event.env
+./mvnw -B -ntp spring-boot:run
+curl -s http://127.0.0.1:8083/actuator/health/readiness
+curl -s http://127.0.0.1:8083/.well-known/jwks.json
+```
+
+Build the image after `verify` with `docker build -t pipesor-log-event-service .`.
+CI (`.github/workflows/ci.yml`) runs the shared `java-verify` action, builds
+and checks the image, and publishes the tested image from `main`.
 
 For the current documentation foundation, check affected links and consistency with the referenced sources, then run:
 

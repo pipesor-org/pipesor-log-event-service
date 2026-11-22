@@ -40,6 +40,13 @@ Current target: only `dev` is selected for temporary academic MVP preparation (A
 
 ## Execution
 
+MVP runtime (superseding the pending rows below where they conflict): the
+image, port `8080`, profiles, environment variables, probes
+(`/actuator/health/liveness`, `/actuator/health/readiness`), Flyway history
+table `flyway_history_log_event` and Service Bus subscription follow the
+pipesor-docs runtime manifest and platform identity contract v1. See the
+[README](../README.md#configuration) for the configuration table.
+
 Documented fact: Documented Service Bus subscription delivery and REST/HTTPS queries from the dashboard through ACA native ingress (rel_dashboard_log_event_service). Exact exposure and caller authorization remain pending. Sources: service relationships listed in [architecture consumption](architecture.md), ADR-015/016/019 where applicable.
 
 The protected evidence intake can use the internal v1 Pipeline HTTPS
@@ -134,24 +141,27 @@ No environment database has been migrated by these local checks.
 
 ## Correlation evidence membership v1
 
-The internal `/internal/v1/evidence/membership-checks` handler is composed
-explicitly. Its caller is Correlation, with separate Entra workload issuer,
-signing-key URI, recipient audience, principal, client and role plus the
-permitted capture tenant and GitHub installation. Configure the request
-deadline, clock skew, body, header and concurrency limits at composition.
-Production callers connect through a trusted internal HTTPS listener.
-Correlation first verifies the same capture revision and attempt through
-Pipeline/Ingestion. The lookup matches the committed scope and the exact
-execution and incident, without loading evidence text. Absent, crossed and
-unbound rows return the same result. Legacy binding recovery is a separate
-approved operation.
+`POST /internal/v1/evidence/membership-checks` is a Spring MVC route behind
+the platform JWT decoder. Only workload `correlation` with role
+`Correlation.EvidenceMembership.Check` reaches it (platform identity contract
+v1 route catalog). The request tenant must equal `PIPESOR_TENANT_ID`; the
+installation is taken from the request and enforced by the scoped lookup.
+Deadline, body, header and concurrency limits are configured under
+`pipesor.log-event.membership`. Correlation first verifies the same capture
+revision and attempt through Pipeline/Ingestion. The lookup matches the
+committed scope and the exact execution and incident, without loading evidence
+text. Absent, crossed and unbound rows return the same result. Legacy binding
+recovery is a separate approved operation.
 
 See the [owner-validation contract](https://github.com/pipesor-org/pipesor-evidence-correlation-engine/blob/main/docs/contracts/owner-validation-v1.openapi.yaml).
 
-### Protected evidence 2.1
+### Protected evidence 2.1 and 2.2
 
 Apply V3 before consuming aggregate observations. The decoder requires a
 job-bound single-line source locator and stores it with the repository,
 workflow, run and attempt in the owned evidence row. A changed locator under
 the same evidence ID conflicts. Historical 2.0 rows retain a null locator.
 Existing intake authorization and authenticated membership queries still apply.
+Version 2.2 accepts any percent-encoded archive member (at most one directory
+level) and ranges of up to 200 lines; validation checks shape only and stores
+the locator byte-for-byte. No migration is needed (`source_locator` is text).
