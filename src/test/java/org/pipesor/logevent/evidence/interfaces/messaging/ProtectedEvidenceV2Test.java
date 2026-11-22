@@ -52,6 +52,72 @@ class ProtectedEvidenceV2Test {
     }
 
     @Test
+    void version21KeepsItsExactSingleLineVerifyRules() throws Exception {
+        var digest = "b".repeat(64);
+        assertThat(locator("2.1", "701", "v2:job:701:member:12_verify.txt:lines:9-9:sha256:" + digest)).isNotNull();
+        for (var invalid : List.of("v2:job:701:member:12_verify.txt:lines:9-10:sha256:" + digest,
+                "v2:job:701:member:build.txt:lines:9-9:sha256:" + digest)) {
+            assertThrows(IllegalArgumentException.class, () -> locator("2.1", "701", invalid));
+        }
+    }
+
+    @Test
+    void version22AcceptsAnyEncodedMemberAndMultiLineRanges() throws Exception {
+        var digest = "c".repeat(64);
+        for (var valid : List.of(
+                "v2:job:701:member:12_verify.txt:lines:9-9:sha256:" + digest,
+                "v2:job:701:member:build%2F3_Run%20mvn%20verify.txt:lines:120-319:sha256:" + digest,
+                "v2:job:99999999999999999999:member:%C3%A9tape.txt:lines:1-1:sha256:" + digest,
+                "v2:job:701:member:a~b-c_d.e:lines:5-6:sha256:" + digest)) {
+            String job = valid.substring(7, valid.indexOf(":member:"));
+            var stored = locator("2.2", job, valid);
+            assertThat(stored).endsWith(":" + valid);
+        }
+        for (var invalid : List.of(
+                "v2:job:701:member:build.txt:lines:10-9:sha256:" + digest,
+                "v2:job:701:member:build.txt:lines:1-201:sha256:" + digest,
+                "v2:job:702:member:build.txt:lines:1-1:sha256:" + digest,
+                "v2:job:701:member:build%2f1.txt:lines:1-1:sha256:" + digest,
+                "v2:job:701:member:%41.txt:lines:1-1:sha256:" + digest,
+                "v2:job:701:member:%2Fetc.txt:lines:1-1:sha256:" + digest,
+                "v2:job:701:member:..%2Fx.txt:lines:1-1:sha256:" + digest,
+                "v2:job:701:member:a%2Fb%2Fc.txt:lines:1-1:sha256:" + digest,
+                "v2:job:701:member:dir%2F:lines:1-1:sha256:" + digest,
+                "v2:job:701:member:a%5Cb.txt:lines:1-1:sha256:" + digest,
+                "v2:job:701:member:a%0Ab.txt:lines:1-1:sha256:" + digest,
+                "v2:job:701:member:%FF.txt:lines:1-1:sha256:" + digest,
+                "v2:job:701:member:" + "a".repeat(256) + ":lines:1-1:sha256:" + digest,
+                "v2:job:701:member:build.txt:lines:1-1:sha256:" + "C".repeat(64),
+                "v2:job:701:member:build.txt:lines:0-1:sha256:" + digest)) {
+            assertThrows(IllegalArgumentException.class, () -> locator("2.2", "701", invalid), invalid);
+        }
+        var mapper = JsonMapper.builder().build();
+        var document = (tools.jackson.databind.node.ObjectNode) mapper.readTree(fixture());
+        document.put("schema_version", "2.2");
+        ((tools.jackson.databind.node.ObjectNode) document.get("evidence")).put("job", "701");
+        assertThrows(IllegalArgumentException.class, () -> decode(mapper.writeValueAsBytes(document)));
+    }
+
+    @Test
+    void version20MustNotCarryALocator() throws Exception {
+        var mapper = JsonMapper.builder().build();
+        var document = (tools.jackson.databind.node.ObjectNode) mapper.readTree(fixture());
+        ((tools.jackson.databind.node.ObjectNode) document.get("evidence"))
+                .put("source_locator", "v2:job:701:member:build.txt:lines:1-1:sha256:" + "d".repeat(64));
+        assertThrows(IllegalArgumentException.class, () -> decode(mapper.writeValueAsBytes(document)));
+    }
+
+    private static String locator(String version, String job, String locator) throws Exception {
+        var mapper = JsonMapper.builder().build();
+        var document = (tools.jackson.databind.node.ObjectNode) mapper.readTree(fixture());
+        document.put("schema_version", version);
+        var evidence = (tools.jackson.databind.node.ObjectNode) document.get("evidence");
+        evidence.put("job", job);
+        evidence.put("source_locator", locator);
+        return decode(mapper.writeValueAsBytes(document)).input().sourceLocator();
+    }
+
+    @Test
     void acceptsNullableOrAbsentJobAndSequence() throws Exception {
         var mapper = JsonMapper.builder().build();
         var document = (tools.jackson.databind.node.ObjectNode) mapper.readTree(fixture());

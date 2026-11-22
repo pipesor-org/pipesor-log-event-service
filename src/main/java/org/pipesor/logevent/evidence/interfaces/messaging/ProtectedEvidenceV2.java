@@ -18,7 +18,7 @@ import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-/** Decoder for protected workflow evidence 2.0 and 2.1 (broker schemaMajor 2). */
+/** Decoder for protected workflow evidence 2.0, 2.1 and 2.2 (broker schemaMajor 2). */
 public record ProtectedEvidenceV2(EvidenceInput input, ExecutionBinding binding) {
     private static final String EVENT_TYPE = "protected_workflow_evidence";
     private static final JsonMapper JSON = JsonMapper.builder()
@@ -38,7 +38,7 @@ public record ProtectedEvidenceV2(EvidenceInput input, ExecutionBinding binding)
                     .decode(ByteBuffer.wrap(body)).toString();
             JsonNode root = object(JSON.readTree(decoded));
             String version = text(root, "schema_version");
-            require("2.0".equals(version) || "2.1".equals(version));
+            require("2.0".equals(version) || "2.1".equals(version) || "2.2".equals(version));
             require(EVENT_TYPE.equals(text(root, "event_type")));
             UUID sourceMessageId = uuid(root, "message_id");
             String sourceCorrelationId = safeId(root, "correlation_id");
@@ -77,9 +77,13 @@ public record ProtectedEvidenceV2(EvidenceInput input, ExecutionBinding binding)
             String job = nullableText(evidence, "job", false);
             String locator = null;
             if ("2.1".equals(version)) {
+                // 2.1 keeps its exact rules: the bounded Verify member and a single line.
                 locator = text(evidence, "source_locator");
                 require(job != null && job.matches("[1-9][0-9]*") && locator.matches(
                         "v2:job:" + job + ":member:[0-9]{1,9}_verify\\.txt:lines:([1-9][0-9]{0,8})-\\1:sha256:[0-9a-f]{64}"));
+            } else if ("2.2".equals(version)) {
+                locator = text(evidence, "source_locator");
+                require(job != null && SourceLocator.isValid(locator, job));
             } else { require(!evidence.has("source_locator")); }
             EvidenceInput input = new EvidenceInput(sourceMessageId, incidentId, executionId,
                     sourceCorrelationId, "github_actions", PipelineStage.valueOf(text(evidence, "stage")),
