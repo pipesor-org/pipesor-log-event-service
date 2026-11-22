@@ -1,0 +1,10 @@
+# Azure: managed identity for PostgreSQL (Entra token) and the Key Vault signing key.
+spring:
+  datasource:
+    hikari:
+      data-source-properties:
+        sslmode: require
+        authenticationPluginClassName: com.azure.identity.extensions.jdbc.postgresql.AzurePostgresqlAuthenticationPlugin
+
+pipesor:
+  signing-key-id: ${PIPESOR_SIGNING_KEY_ID}

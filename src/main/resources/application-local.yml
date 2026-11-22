@@ -1,0 +1,7 @@
+# Local stack (pipesor-workspace): password PostgreSQL, PEM signing key.
+spring:
+  datasource:
+    password: ${PIPESOR_DATABASE_PASSWORD}
+
+pipesor:
+  signing-key-file: ${PIPESOR_SIGNING_KEY_FILE}
