@@ -1,0 +1,65 @@
+# Runtime inputs follow pipesor-docs docs/development/runtime-manifest.md.
+spring:
+  application:
+    name: pipesor-log-event-service
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: ${PIPESOR_DATABASE_URL}
+    username: ${PIPESOR_DATABASE_USERNAME}
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 5000
+  flyway:
+    enabled: true
+    default-schema: evidence
+    schemas: evidence
+    table: flyway_history_log_event
+    baseline-on-migrate: true
+    baseline-version: "0"
+
+server:
+  port: 8080
+  shutdown: graceful
+  tomcat:
+    connection-timeout: 5s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState,db,serviceBus
+
+pipesor:
+  workload-id: ${PIPESOR_WORKLOAD_ID}
+  tenant-id: ${PIPESOR_TENANT_ID}
+  # pipesor.security.audience, trusted-workloads[n] and session bind from
+  # PIPESOR_SECURITY_AUDIENCE, PIPESOR_SECURITY_TRUSTEDWORKLOADS_<n>_{ID,JWKSURI,ROLES}
+  # and PIPESOR_SECURITY_SESSION_JWKSURI; pipesor.endpoints.pipeline from PIPESOR_ENDPOINTS_PIPELINE.
+  service-bus:
+    topic: ${PIPESOR_SERVICE_BUS_TOPIC:workflow-evidence}
+    subscription: ${PIPESOR_SERVICE_BUS_SUBSCRIPTION:log-event}
+    concurrency: 4
+    lock-renewal: 5m
+    drain-timeout: 30s
+  log-event:
+    intake:
+      max-message-bytes: 262144
+    pipeline:
+      timeout: 5s
+      max-response-bytes: 4096
+    membership:
+      request-timeout: 2s
+      max-request-bytes: 2048
+      max-header-chars: 8192
+      max-in-flight: 32

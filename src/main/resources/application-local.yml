@@ -1,0 +1,9 @@
+# Local stack (pipesor-workspace): Service Bus emulator, password PostgreSQL, PEM signing key.
+spring:
+  datasource:
+    password: ${PIPESOR_DATABASE_PASSWORD}
+
+pipesor:
+  signing-key-file: ${PIPESOR_SIGNING_KEY_FILE}
+  service-bus:
+    connection-string: ${PIPESOR_SERVICE_BUS_CONNECTION_STRING}

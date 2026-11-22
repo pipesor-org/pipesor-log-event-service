@@ -9,6 +9,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.UUID;
 import org.pipesor.logevent.evidence.application.commands.EvidenceInput;
+import org.pipesor.logevent.evidence.application.ports.ExecutionBinding;
 import org.pipesor.logevent.evidence.domain.model.valueobjects.PipelineStage;
 import org.pipesor.logevent.evidence.domain.model.valueobjects.EvidenceScope;
 import org.pipesor.logevent.evidence.domain.services.EvidenceIdentity;
@@ -17,27 +18,14 @@ import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-/** Isolated compatibility adapter for the existing producer, pending the joint intake contract. */
-public record ProtectedEvidenceV2(EvidenceInput input, Binding binding) {
+/** Decoder for protected workflow evidence 2.0, 2.1 and 2.2 (broker schemaMajor 2). */
+public record ProtectedEvidenceV2(EvidenceInput input, ExecutionBinding binding) {
     private static final String EVENT_TYPE = "protected_workflow_evidence";
     private static final JsonMapper JSON = JsonMapper.builder()
             .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
             .disable(StreamReadFeature.INCLUDE_SOURCE_IN_LOCATION)
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
             .build();
-
-    /** Full historical binding for the caller's authority check; identities alone do not grant access. */
-    public record Binding(
-            UUID tenantId, String githubAccountId, String githubInstallationId,
-            String githubRepositoryId, String githubWorkflowId, String githubRunId,
-            int runAttempt, String scopeRevision, UUID pipelineId,
-            Instant sourceUpdatedAt, Instant occurredAt, String commitSha,
-            String status, String conclusion, String service, String environment) {
-        @Override
-        public String toString() {
-            return "Binding[protected]";
-        }
-    }
 
     public static ProtectedEvidenceV2 decode(byte[] body, int maxBytes, String messageId,
             String correlationId, String eventType, int schemaMajor) {
@@ -50,7 +38,7 @@ public record ProtectedEvidenceV2(EvidenceInput input, Binding binding) {
                     .decode(ByteBuffer.wrap(body)).toString();
             JsonNode root = object(JSON.readTree(decoded));
             String version = text(root, "schema_version");
-            require("2.0".equals(version) || "2.1".equals(version));
+            require("2.0".equals(version) || "2.1".equals(version) || "2.2".equals(version));
             require(EVENT_TYPE.equals(text(root, "event_type")));
             UUID sourceMessageId = uuid(root, "message_id");
             String sourceCorrelationId = safeId(root, "correlation_id");
@@ -89,16 +77,20 @@ public record ProtectedEvidenceV2(EvidenceInput input, Binding binding) {
             String job = nullableText(evidence, "job", false);
             String locator = null;
             if ("2.1".equals(version)) {
+                // 2.1 keeps its exact rules: the bounded Verify member and a single line.
                 locator = text(evidence, "source_locator");
                 require(job != null && job.matches("[1-9][0-9]*") && locator.matches(
                         "v2:job:" + job + ":member:[0-9]{1,9}_verify\\.txt:lines:([1-9][0-9]{0,8})-\\1:sha256:[0-9a-f]{64}"));
+            } else if ("2.2".equals(version)) {
+                locator = text(evidence, "source_locator");
+                require(job != null && SourceLocator.isValid(locator, job));
             } else { require(!evidence.has("source_locator")); }
             EvidenceInput input = new EvidenceInput(sourceMessageId, incidentId, executionId,
                     sourceCorrelationId, "github_actions", PipelineStage.valueOf(text(evidence, "stage")),
                     job, text(evidence, "summary"), text(evidence, "excerpt"),
                     occurredAt, sequence(evidence), null, null, new EvidenceScope(tenantId, installationId, scopeRevision),
                     locator == null ? null : repositoryId + ":" + workflowId + ":" + runId + ":" + attempt + ":" + locator);
-            return new ProtectedEvidenceV2(input, new Binding(tenantId, accountId, installationId,
+            return new ProtectedEvidenceV2(input, new ExecutionBinding(tenantId, accountId, installationId,
                     repositoryId, workflowId, runId, attempt, scopeRevision, pipelineId,
                     sourceUpdatedAt, occurredAt, commitSha, status, conclusion, service, environment));
         } catch (RuntimeException | CharacterCodingException invalid) {
