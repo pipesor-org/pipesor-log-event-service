@@ -17,18 +17,29 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 import org.pipesor.logevent.evidence.application.ports.EvidenceAuthority.Decision;
+import org.pipesor.logevent.evidence.application.ports.ExecutionBinding;
+import org.pipesor.logevent.evidence.application.ports.OperationalReferenceAuthority;
 import org.pipesor.logevent.evidence.application.queries.EvidenceMembershipQuery;
-import org.pipesor.logevent.evidence.interfaces.messaging.ProtectedEvidenceIntake;
-import org.pipesor.logevent.evidence.interfaces.messaging.ProtectedEvidenceV2;
+import org.pipesor.logevent.shared.security.TransportPolicy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import tools.jackson.core.StreamReadFeature;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-/** Read-only Pipeline authority. Compose only with an authenticated evidence delivery channel. */
-public final class HttpPipelineAuthority implements ProtectedEvidenceIntake.Authority {
+/**
+ * Read-only Pipeline authority (route catalog: log-event → pipeline, role {@value #ROLE}).
+ * Compose only with an authenticated evidence delivery channel.
+ */
+public final class HttpPipelineAuthority implements OperationalReferenceAuthority {
+    public static final String TARGET = "pipeline";
+    public static final String ROLE = "Evidence.Check";
     private static final String PATH = "/internal/v1/evidence/operational-reference-checks";
+    private static final Logger LOG = LoggerFactory.getLogger(HttpPipelineAuthority.class);
+    private static final Pattern JSON_MEDIA = Pattern.compile("(?i)application/json(?:\\s*;\\s*charset=\"?utf-8\"?)?");
     private static final JsonMapper JSON = JsonMapper.builder()
             .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
@@ -37,7 +48,7 @@ public final class HttpPipelineAuthority implements ProtectedEvidenceIntake.Auth
 
     @FunctionalInterface
     public interface TokenSource {
-        /** Return a valid app-only token for Pipeline within the supplied remaining budget. */
+        /** Return a valid workload token for Pipeline ({@value #ROLE}) within the supplied remaining budget. */
         String acquire(Duration remaining);
     }
 
@@ -48,23 +59,22 @@ public final class HttpPipelineAuthority implements ProtectedEvidenceIntake.Auth
     private final Duration timeout;
     private final int maxResponseBytes;
 
-    public HttpPipelineAuthority(URI origin, TokenSource tokens, Duration timeout, int maxResponseBytes) {
-        this(HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build(), origin,
-                tokens, Clock.systemUTC(), timeout, maxResponseBytes);
+    public HttpPipelineAuthority(URI origin, TokenSource tokens, TransportPolicy transport, Duration timeout,
+            int maxResponseBytes) {
+        this(origin, tokens, transport, Clock.systemUTC(), timeout, maxResponseBytes);
     }
 
-    HttpPipelineAuthority(HttpClient http, URI origin, TokenSource tokens, Clock clock,
+    public HttpPipelineAuthority(URI origin, TokenSource tokens, TransportPolicy transport, Clock clock,
             Duration timeout, int maxResponseBytes) {
-        if (!"https".equals(origin.getScheme()) || origin.getHost() == null || origin.getRawUserInfo() != null
-                || origin.getRawQuery() != null || origin.getRawFragment() != null
-                || !List.of("", "/").contains(origin.getRawPath())
-                || timeout.isZero() || timeout.isNegative() || maxResponseBytes < 1
-                || http.followRedirects() != HttpClient.Redirect.NEVER) {
+        Objects.requireNonNull(transport);
+        if (origin == null || !List.of("", "/").contains(Objects.requireNonNullElse(origin.getRawPath(), ""))
+                || timeout == null || timeout.isZero() || timeout.isNegative() || maxResponseBytes < 1) {
             throw new IllegalArgumentException("Invalid Pipeline authority configuration");
         }
         timeout.toNanos();
-        this.endpoint = origin.resolve(PATH);
-        this.http = http;
+        this.endpoint = transport.resolve(origin, PATH);
+        this.http = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER)
+                .connectTimeout(timeout).build();
         this.tokens = Objects.requireNonNull(tokens);
         this.clock = Objects.requireNonNull(clock);
         this.timeout = timeout;
@@ -72,7 +82,7 @@ public final class HttpPipelineAuthority implements ProtectedEvidenceIntake.Auth
     }
 
     @Override
-    public Decision verify(ProtectedEvidenceV2.Binding binding, EvidenceMembershipQuery references,
+    public Decision verify(ExecutionBinding binding, EvidenceMembershipQuery references,
             String correlationId) {
         long start = System.nanoTime();
         CompletableFuture<HttpResponse<byte[]>> response = null;
@@ -104,7 +114,8 @@ public final class HttpPipelineAuthority implements ProtectedEvidenceIntake.Auth
             response = http.sendAsync(request, ignored -> new BoundedBody(maxResponseBytes));
             var received = response.get(remaining(start).toNanos(), TimeUnit.NANOSECONDS);
             if (received.statusCode() != 200 || !received.headers().allValues("Cache-Control").equals(List.of("no-store"))
-                    || !received.headers().allValues("Content-Type").equals(List.of("application/json"))) {
+                    || !jsonMedia(received.headers().allValues("Content-Type"))) {
+                LOG.warn("Pipeline reference check unusable: status={} correlationId={}", received.statusCode(), correlationId);
                 return Decision.UNAVAILABLE;
             }
             String decoded = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(received.body())).toString();
@@ -125,8 +136,11 @@ public final class HttpPipelineAuthority implements ProtectedEvidenceIntake.Auth
             };
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
+            LOG.warn("Pipeline reference check interrupted: correlationId={}", correlationId);
             return Decision.UNAVAILABLE;
         } catch (Exception unavailable) {
+            LOG.warn("Pipeline reference check unavailable: {} correlationId={}",
+                    unavailable.getClass().getSimpleName(), correlationId);
             return Decision.UNAVAILABLE;
         } finally {
             if (response != null && !response.isDone()) response.cancel(true);
@@ -137,6 +151,10 @@ public final class HttpPipelineAuthority implements ProtectedEvidenceIntake.Auth
         long nanos = timeout.toNanos() - (System.nanoTime() - start);
         if (nanos <= 0) throw new IllegalStateException("Pipeline validation deadline exceeded");
         return Duration.ofNanos(nanos);
+    }
+
+    private static boolean jsonMedia(List<String> values) {
+        return values.size() == 1 && JSON_MEDIA.matcher(values.getFirst().strip()).matches();
     }
 
     private static String string(JsonNode json, String name) {
