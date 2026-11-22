@@ -38,7 +38,7 @@ management:
         liveness:
           include: livenessState
         readiness:
-          include: readinessState,db
+          include: readinessState,db,serviceBus
 
 pipesor:
   workload-id: ${PIPESOR_WORKLOAD_ID}
@@ -46,6 +46,12 @@ pipesor:
   # pipesor.security.audience, trusted-workloads[n] and session bind from
   # PIPESOR_SECURITY_AUDIENCE, PIPESOR_SECURITY_TRUSTEDWORKLOADS_<n>_{ID,JWKSURI,ROLES}
   # and PIPESOR_SECURITY_SESSION_JWKSURI; pipesor.endpoints.pipeline from PIPESOR_ENDPOINTS_PIPELINE.
+  service-bus:
+    topic: ${PIPESOR_SERVICE_BUS_TOPIC:workflow-evidence}
+    subscription: ${PIPESOR_SERVICE_BUS_SUBSCRIPTION:log-event}
+    concurrency: 4
+    lock-renewal: 5m
+    drain-timeout: 30s
   log-event:
     intake:
       max-message-bytes: 262144

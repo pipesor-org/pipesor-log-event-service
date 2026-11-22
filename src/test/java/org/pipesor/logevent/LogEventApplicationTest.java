@@ -91,6 +91,9 @@ class LogEventApplicationTest {
         registry.add("PIPESOR_TENANT_ID", TENANT::toString);
         registry.add("PIPESOR_WORKLOAD_ID", () -> "log-event");
         registry.add("PIPESOR_SIGNING_KEY_FILE", pem::toString);
+        registry.add("PIPESOR_SERVICE_BUS_CONNECTION_STRING", () -> "unused-in-test");
+        registry.add("pipesor.service-bus.enabled", () -> "false");
+        registry.add("management.endpoint.health.validate-group-membership", () -> "false");
         registry.add("pipesor.security.audience", () -> "urn:pipesor:api:log-event");
         registry.add("pipesor.security.trusted-workloads[0].id", () -> "correlation");
         registry.add("pipesor.security.trusted-workloads[0].jwks-uri", () -> keys + "/correlation");

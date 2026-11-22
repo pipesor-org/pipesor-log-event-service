@@ -1,4 +1,4 @@
-# Azure: managed identity for PostgreSQL (Entra token) and the Key Vault signing key.
+# Azure: managed identity for Service Bus, PostgreSQL (Entra token) and the Key Vault signing key.
 spring:
   datasource:
     hikari:
@@ -8,3 +8,5 @@ spring:
 
 pipesor:
   signing-key-id: ${PIPESOR_SIGNING_KEY_ID}
+  service-bus:
+    namespace: ${PIPESOR_SERVICE_BUS_NAMESPACE}
